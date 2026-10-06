@@ -22,11 +22,13 @@ const els = {
   shortcutButton: $("#shortcutButton"),
   settingsError: $("#settingsError"),
   settingsBack: $("#settingsBack"),
+  tabs: $("#tabs"),
   welcomeKeys: $("#welcomeKeys"),
   welcomeFolder: $("#welcomeFolder"),
   welcomeFolderHint: $("#welcomeFolderHint"),
   welcomeAutostart: $("#welcomeAutostart"),
   welcomeDone: $("#welcomeDone"),
+  minimap: $("#minimap"),
 };
 
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -83,7 +85,17 @@ function samePath(a, b) {
   return norm(a) === norm(b);
 }
 
-const isCurrent = (item) => !!item && samePath(item.path, state.snapshot?.current);
+const screens = () => state.snapshot?.screens || [];
+const multiScreen = () => screens().length > 1;
+const lockOwn = () => state.settings?.lockMode === "own";
+const editingLock = () => lockOwn() && !!state.snapshot?.editingLock;
+const mapOn = () => multiScreen() || (lockOwn() && screens().length > 0);
+const currentPath = () => (editingLock() ? state.settings?.lockWallpaper : state.snapshot?.current);
+const isCurrent = (item) => !!item && samePath(item.path, currentPath());
+const editingScreen = () => screens().find((s) => s.editing) || screens().find((s) => s.here) || null;
+const screenName = (s) => (!s || s.here ? "this screen" : `screen ${s.number}`);
+const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+const otherScreenShowing = (item) => screens().find((s) => (editingLock() || !s.editing) && samePath(s.current, item.path));
 
 function prettyShortcut(accel) {
   return (accel || "")
@@ -369,6 +381,8 @@ function renderCaption(direction = 0, swap = false) {
 }
 
 function writeCaption(direction) {
+  body.classList.toggle("filtering", !!state.filter);
+  body.classList.toggle("has-status", !!state.status);
   els.emptyActions.hidden = true;
   body.dataset.empty = String(!state.items.length);
   const parts = [];
@@ -405,7 +419,15 @@ function writeCaption(direction) {
   if (state.status) {
     parts.push(span(state.status.text, state.status.kind === "error" ? "error" : "strong"));
   } else {
-    if (isCurrent(item)) parts.push(span("On your desktop", "strong"));
+    const editing = editingScreen();
+    const lock = editingLock();
+    const elsewhere = multiScreen() && otherScreenShowing(item);
+    if (lock) parts.push(span("Editing lock screen", "strong"));
+    else if (multiScreen() && editing && !editing.here) parts.push(span(`Editing screen ${editing.number}`, "strong"));
+    if (isCurrent(item)) {
+      parts.push(span(lock ? "On the lock screen" : multiScreen() ? `On ${screenName(editing)}` : "On your desktop", "strong"));
+    }
+    else if (elsewhere) parts.push(span(`On screen ${elsewhere.number}`));
     if (item.width && item.height) parts.push(span(`${item.width} × ${item.height}`));
     if (isExpanded()) {
       const sub = item.folder.split("/").slice(1).join(" / ");
@@ -435,7 +457,7 @@ function place(node, p) {
 function makeWallCard(onClick) {
   const card = el("div", "card");
   card.setAttribute("role", "option");
-  card.addEventListener("click", (ev) => { ev.stopPropagation(); onClick(); });
+  card.addEventListener("click", (ev) => { ev.stopPropagation(); onClick(ev.shiftKey); });
   return card;
 }
 
@@ -443,7 +465,7 @@ function makeFolderCard(e) {
   const card = el("div", "card folder");
   card.setAttribute("role", "option");
   card.append(el("div", "sheet s3"), el("div", "sheet s2"), el("div", "sheet s1"), el("span", "count", String(e.items.length)));
-  card.addEventListener("click", (ev) => { ev.stopPropagation(); onRowClick(e.key); });
+  card.addEventListener("click", (ev) => { ev.stopPropagation(); onRowClick(e.key, ev.shiftKey); });
   return card;
 }
 
@@ -480,7 +502,7 @@ function renderRow(mode = null) {
       selected: d === 0 && !expanded,
       delay,
       cls: mode === "reveal" ? "slow" : "",
-      make: () => (e.type === "folder" ? makeFolderCard(e) : makeWallCard(() => onRowClick(e.key))),
+      make: () => (e.type === "folder" ? makeFolderCard(e) : makeWallCard((shift) => onRowClick(e.key, shift))),
       fill: (n) => {
         if (e.type === "folder") fillFolder(n, e, d === 0);
         else { setThumb(n, e.item, d === 0); setDot(n, isCurrent(e.item)); }
@@ -506,7 +528,7 @@ function renderRow(mode = null) {
         selected: k === 0,
         delay,
         cls: mode === "expand" ? "slow" : mode === "drift" ? "drift" : "",
-        make: () => makeWallCard(() => onColClick(item.path)),
+        make: () => makeWallCard((shift) => onColClick(item.path, shift)),
         fill: (n) => { setThumb(n, item, k === 0); setDot(n, isCurrent(item)); },
       });
     }
@@ -575,22 +597,22 @@ function clearRow() {
   nodes.clear();
 }
 
-function onRowClick(key) {
+function onRowClick(key, shift = false) {
   if (state.phase !== "open" || state.busy) return;
   const r = state.entries.findIndex((e) => e.key === key);
   if (r < 0) return;
   const e = state.entries[r];
   if (r !== state.row) { selectRow(r); return; }
   if (e.type === "folder") isExpanded() ? collapse() : expand();
-  else applySelected();
+  else applySelected(shift);
 }
 
-function onColClick(path) {
+function onColClick(path, shift = false) {
   if (state.phase !== "open" || state.busy) return;
   const e = entry();
   const j = e?.items.findIndex((i) => i.path === path) ?? -1;
   if (j < 0) return;
-  if (j === state.col) applySelected();
+  if (j === state.col) applySelected(shift);
   else selectCol(j);
 }
 
@@ -746,7 +768,7 @@ function renderGrid(entering = false) {
       tile.addEventListener("click", (ev) => {
         ev.stopPropagation();
         if (state.phase !== "open") return;
-        if (idx === state.gindex) applySelected();
+        if (idx === state.gindex) applySelected(ev.shiftKey);
         else selectGrid(idx);
       });
       gridEls.set(item.path, tile);
@@ -811,6 +833,7 @@ function renderPicker(mode = null) {
   renderCaption(0);
   updateGlow();
   renderHints();
+  renderMinimap();
 }
 
 function fadeInRow() {
@@ -849,7 +872,7 @@ function renderHints() {
     return;
   }
   if (state.view === "settings") {
-    els.hints.replaceChildren(hint(["Esc"], state.settingsFrom === "picker" ? "Back" : "Close"));
+    els.hints.replaceChildren(hint(["Ctrl", "Tab"], "Next tab"), hint(["Esc"], state.settingsFrom === "picker" ? "Back" : "Close"));
     return;
   }
   if (!state.items.length) {
@@ -857,42 +880,90 @@ function renderHints() {
     return;
   }
   const esc = hint(["Esc"], state.filter ? "Clear filter" : isExpanded() ? "Close folder" : "Close");
+  const multi = multiScreen();
+  const oneByDefault = !!state.settings?.enterThisScreen;
+  const editing = editingScreen();
+  const lock = editingLock();
+  const setHint = lock
+    ? hint(["Enter"], "Set lock screen")
+    : multi
+      ? hint(["Enter"], oneByDefault ? `Set on ${screenName(editing)}` : "Set on all screens")
+      : hint(["Enter"], "Set wallpaper");
+  const flipHint = multi && !lock
+    ? hint(["Shift", "Enter"], oneByDefault ? "All screens" : `${capitalize(screenName(editing))} only`)
+    : null;
+  const screenHint = mapTiles().length > 1
+    ? hint(["Ctrl", ...mapArrows()], multi ? "Other screen" : "Lock screen", true)
+    : null;
+  const settingsHint = hint(["Ctrl", ","], "Settings");
+  const uiHint = hint(["Ctrl", "H"], uiHintLabel());
   if (layout() === "grid") {
     els.hints.replaceChildren(
-      hint(["←", "↑", "↓", "→"], "Browse"),
-      hint(["Enter"], "Set wallpaper"),
-      hint(["Tab"], "Row view", true),
-      hint(["A–Z"], "Filter", true),
-      hint(["Ctrl", ","], "Settings", true),
-      esc
+      ...[
+        hint(["←", "↑", "↓", "→"], "Browse"),
+        setHint,
+        flipHint,
+        screenHint,
+        hint(["Tab"], "Row view", true),
+        hint(["A–Z"], "Filter", true),
+        settingsHint,
+        uiHint,
+        esc,
+      ].filter(Boolean)
     );
     return;
   }
   if (isExpanded()) {
     els.hints.replaceChildren(
-      hint(["↑", "↓"], "Browse folder"),
-      hint(["Enter"], "Set wallpaper"),
-      hint(["Tab"], "Grid view", true),
-      esc
+      ...[
+        hint(["↑", "↓"], "Browse folder"),
+        setHint,
+        flipHint,
+        screenHint,
+        hint(["Tab"], "Grid view", true),
+        settingsHint,
+        uiHint,
+        esc,
+      ].filter(Boolean)
     );
     return;
   }
   const folder = entry()?.type === "folder";
   els.hints.replaceChildren(
-    hint(["←", "→"], "Browse"),
-    folder ? hint(["↓"], "Open folder") : hint(["Enter"], "Set wallpaper"),
-    hint(["Tab"], "Grid view", true),
-    hint(["A–Z"], "Filter", true),
-    hint(["Ctrl", ","], "Settings", true),
-    esc
+    ...[
+      hint(["←", "→"], "Browse"),
+      folder ? hint(["↓"], "Open folder") : setHint,
+      folder ? null : flipHint,
+      screenHint,
+      hint(["Tab"], "Grid view", true),
+      hint(["A–Z"], "Filter", true),
+      settingsHint,
+      uiHint,
+      esc,
+    ].filter(Boolean)
   );
 }
 
 function applySnapshot(snap) {
   state.snapshot = snap;
-  state.settings = { ...snap.settings };
+  state.settings = {
+    enterThisScreen: false,
+    followScreen: true,
+    mapSize: "medium",
+    lockMode: "off",
+    lockSpot: "left",
+    editGlow: true,
+    uiHidden: false,
+    hideHints: true,
+    hideTitle: false,
+    hideDetails: false,
+    hideMap: false,
+    ...snap.settings,
+  };
   body.dataset.dim = snap.settings.dim || "soft";
   body.dataset.layout = layout();
+  body.dataset.screens = (snap.screens || []).length > 1 ? "many" : "one";
+  applyUiAttributes();
   renderSettings();
 }
 
@@ -939,6 +1010,7 @@ async function open(view = "picker") {
   state.filter = "";
   state.status = null;
   state.settingsFrom = null;
+  state.lockImage = undefined;
   lastTitle = "";
   els.title.replaceChildren();
   els.applyLayer.className = "apply-layer";
@@ -1007,6 +1079,243 @@ async function dismissWelcome() {
   close();
 }
 
+const ARROW_DIRECTIONS = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
+
+const middle = (rect) => ({ x: (rect[0] + rect[2]) / 2, y: (rect[1] + rect[3]) / 2 });
+
+function mapTiles() {
+  const list = screens();
+  const tiles = list.map((s, i) => ({ kind: "screen", index: i, screen: s, rect: s.rect }));
+  if (!lockOwn() || !list.length) return tiles;
+  const primary = list.find((s) => s.rect[0] === 0 && s.rect[1] === 0) || list[0];
+  const pw = (primary.rect[2] - primary.rect[0]) * LOCK_SCALE;
+  const ph = (primary.rect[3] - primary.rect[1]) * LOCK_SCALE;
+  const [left, top, right, bottom] = bounds(list.map((s) => s.rect));
+  const gap = Math.max(right - left, bottom - top) * 0.06;
+  const rect = state.settings?.lockSpot === "above"
+    ? [right - pw, top - gap - ph, right, top - gap]
+    : [left - gap - pw, bottom - ph, left - gap, bottom];
+  tiles.push({ kind: "lock", rect });
+  return tiles;
+}
+
+function bounds(rects) {
+  return [
+    Math.min(...rects.map((r) => r[0])),
+    Math.min(...rects.map((r) => r[1])),
+    Math.max(...rects.map((r) => r[2])),
+    Math.max(...rects.map((r) => r[3])),
+  ];
+}
+
+function editingTile(tiles) {
+  if (editingLock()) return tiles.find((t) => t.kind === "lock");
+  const s = editingScreen();
+  return tiles.find((t) => t.screen === s);
+}
+
+function mapArrows() {
+  const centres = mapTiles().map((t) => middle(t.rect));
+  let across = false;
+  let stacked = false;
+  centres.forEach((a, i) => {
+    for (const b of centres.slice(i + 1)) {
+      if (Math.abs(a.x - b.x) >= Math.abs(a.y - b.y)) across = true;
+      else stacked = true;
+    }
+  });
+  return [...(across ? ["←"] : []), ...(stacked ? ["↑", "↓"] : []), ...(across ? ["→"] : [])];
+}
+
+function neighbor(direction) {
+  const tiles = mapTiles();
+  const from = editingTile(tiles);
+  if (!from) return null;
+  const origin = middle(from.rect);
+  let best = null;
+  let bestScore = Infinity;
+  for (const t of tiles) {
+    if (t === from) continue;
+    const p = middle(t.rect);
+    const dx = p.x - origin.x;
+    const dy = p.y - origin.y;
+    const along = { left: -dx, right: dx, up: -dy, down: dy }[direction];
+    const across = direction === "left" || direction === "right" ? Math.abs(dy) : Math.abs(dx);
+    if (along <= 0 || across > along * 2) continue;
+    const score = along + across * 2;
+    if (score < bestScore) {
+      bestScore = score;
+      best = t;
+    }
+  }
+  return best;
+}
+
+function selectTile(tile) {
+  if (!tile) return;
+  if (tile.kind === "lock") selectLock();
+  else selectScreen(tile.index);
+}
+
+const minimapNodes = [];
+let lockNode = null;
+let lockImageLoading = false;
+
+const TAB_KEYS = { ArrowLeft: -1, ArrowRight: 1, Home: -1, End: 1 };
+const MAP_SIZES = { small: [0.125, 0.12], medium: [0.18, 0.17], large: [0.25, 0.24] };
+const LOCK_SCALE = 0.65;
+const LOCK_ICON =
+  '<svg viewBox="0 0 10 12" aria-hidden="true"><path d="M2.5 5V3.6a2.5 2.5 0 0 1 5 0V5h.4A1.1 1.1 0 0 1 9 6.1v4.8A1.1 1.1 0 0 1 7.9 12H2.1A1.1 1.1 0 0 1 1 10.9V6.1A1.1 1.1 0 0 1 2.1 5h.4Zm1.3 0h2.4V3.6a1.2 1.2 0 0 0-2.4 0V5Z"/></svg>';
+
+function mapNode(cls, onClick) {
+  const node = el("button", cls);
+  node.type = "button";
+  node.append(el("span", "map-number"));
+  node.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    onClick(node);
+  });
+  els.minimap.append(node);
+  return node;
+}
+
+function placeTile(node, rect, origin, scale) {
+  node.style.left = `${Math.round((rect[0] - origin[0]) * scale) + 2}px`;
+  node.style.top = `${Math.round((rect[1] - origin[1]) * scale) + 2}px`;
+  node.style.width = `${Math.round((rect[2] - rect[0]) * scale) - 4}px`;
+  node.style.height = `${Math.round((rect[3] - rect[1]) * scale) - 4}px`;
+}
+
+function showImage(node, path) {
+  if (path) {
+    setThumb(node, { path, fileName: "" }, true);
+  } else {
+    node.querySelector(":scope > img")?.remove();
+    delete node.dataset.thumb;
+  }
+}
+
+async function loadLockImage() {
+  if (lockImageLoading) return;
+  lockImageLoading = true;
+  let path = null;
+  try { path = await invoke("lock_screen_image"); } catch (_) {}
+  lockImageLoading = false;
+  if (state.lockImage === undefined) state.lockImage = path || null;
+  if (lockNode) showImage(lockNode, state.lockImage || state.settings?.lockWallpaper);
+}
+
+function renderMinimap() {
+  const list = screens();
+  if (!mapOn()) {
+    els.minimap.replaceChildren();
+    minimapNodes.length = 0;
+    lockNode = null;
+    return;
+  }
+  const tiles = mapTiles();
+  const [left, top, right, bottom] = bounds(tiles.map((t) => t.rect));
+  const [baseLeft, baseTop, baseRight, baseBottom] = bounds(list.map((s) => s.rect));
+  const width = right - left;
+  const height = bottom - top;
+  const size = MAP_SIZES[state.settings?.mapSize] || MAP_SIZES.medium;
+  let boxW = innerWidth * size[0];
+  let boxH = innerHeight * size[1];
+  if (lockOwn()) {
+    if (state.settings.lockSpot === "above") boxH *= Math.min(1.6, height / (baseBottom - baseTop));
+    else boxW *= Math.min(1.6, width / (baseRight - baseLeft));
+  }
+  const scale = Math.min(boxW / width, boxH / height);
+  els.minimap.dataset.size = state.settings?.mapSize || "medium";
+  els.minimap.style.width = `${Math.round(width * scale)}px`;
+  els.minimap.style.height = `${Math.round(height * scale)}px`;
+  body.style.setProperty("--map-h", `${Math.round(height * scale)}px`);
+
+  const lock = editingLock();
+  while (minimapNodes.length > list.length) minimapNodes.pop().remove();
+  list.forEach((s, i) => {
+    const node = minimapNodes[i] || (minimapNodes[i] = mapNode("map-screen", (n) => selectScreen(minimapNodes.indexOf(n))));
+    placeTile(node, s.rect, [left, top], scale);
+    node.setAttribute("aria-current", String(!!s.editing && !lock));
+    node.setAttribute("aria-label", `Screen ${s.number} (Ctrl + ${s.number})`);
+    node.title = `Screen ${s.number} (Ctrl + ${s.number})`;
+    node.querySelector(".map-number").textContent = s.number;
+    showImage(node, s.current);
+  });
+
+  const lockTile = tiles.find((t) => t.kind === "lock");
+  if (!lockTile) {
+    lockNode?.remove();
+    lockNode = null;
+    return;
+  }
+  if (!lockNode) {
+    lockNode = mapNode("map-screen map-lock", () => selectLock());
+    lockNode.querySelector(".map-number").innerHTML = LOCK_ICON;
+    lockNode.setAttribute("aria-label", "Lock screen (Ctrl + L)");
+    lockNode.title = "Lock screen (Ctrl + L)";
+  }
+  placeTile(lockNode, lockTile.rect, [left, top], scale);
+  lockNode.setAttribute("aria-current", String(lock));
+  showImage(lockNode, state.lockImage || state.settings?.lockWallpaper);
+  if (state.lockImage === undefined && state.phase !== "hidden") loadLockImage();
+}
+
+async function selectLock() {
+  if (!lockOwn() || editingLock() || moving) return;
+  if (state.phase !== "open" || state.view !== "picker" || state.busy) return;
+  try {
+    applySnapshot(await invoke("select_lock"));
+  } catch (_) {}
+  refreshScreenUi();
+}
+
+function refreshScreenUi() {
+  state.status = null;
+  renderMinimap();
+  if (layout() === "slider") renderRow(null);
+  else for (const [path, tile] of gridEls) setDot(tile, samePath(path, currentPath()));
+  renderCaption(0);
+  updateGlow();
+  renderHints();
+}
+
+let moving = false;
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function selectScreen(index) {
+  const target = screens()[index];
+  if (!target || (target.editing && !editingLock()) || moving) return;
+  if (state.phase !== "open" || state.view !== "picker" || state.busy) return;
+  if (state.settings.followScreen === false || target.here) {
+    try {
+      applySnapshot(await invoke("select_screen", { index }));
+    } catch (_) {}
+    refreshScreenUi();
+    flashEdge();
+    return;
+  }
+  moving = true;
+  rememberAnchor();
+  body.classList.add("moving");
+  await pause(180);
+  try {
+    applySnapshot(await invoke("select_screen", { index }));
+  } catch (_) {}
+  await nextFrame();
+  await pause(60);
+  if (state.phase === "open") {
+    measure();
+    state.status = null;
+    lastTitle = "";
+    body.classList.remove("moving");
+    flashEdge();
+    await enterPicker();
+  }
+  body.classList.remove("moving");
+  moving = false;
+}
+
 async function openFolder() {
   if (state.view === "welcome") await finishWelcome();
   try {
@@ -1037,6 +1346,8 @@ function close() {
   clearTimers();
   clearTimeout(capTimer);
   state.busy = false;
+  moving = false;
+  body.classList.remove("moving");
   rememberAnchor();
   state.phase = "closing";
   body.dataset.phase = "closing";
@@ -1061,8 +1372,13 @@ function close() {
   return closing;
 }
 
-async function applySelected() {
-  if (state.phase !== "open" || state.view !== "picker" || state.busy) return;
+function appliesEverywhere(shift) {
+  if (!multiScreen()) return true;
+  return state.settings?.enterThisScreen ? shift : !shift;
+}
+
+async function applySelected(flip = false) {
+  if (state.phase !== "open" || state.view !== "picker" || state.busy || moving) return;
   const item = selectedItem();
   if (!item) { expand(); return; }
   const node =
@@ -1072,8 +1388,11 @@ async function applySelected() {
   body.dataset.phase = "applying";
   state.status = null;
 
-  const request = invoke("apply_wallpaper", { path: item.path }).then(
-    () => null,
+  const everywhere = appliesEverywhere(flip);
+  const toLock = editingLock();
+  let result = { scope: "all" };
+  const request = invoke("apply_wallpaper", { path: item.path, everywhere }).then(
+    (applied) => { if (applied) result = applied; return null; },
     (e) => String(e)
   );
 
@@ -1112,16 +1431,39 @@ async function applySelected() {
     els.applyLayer.replaceChildren();
     state.phase = "open";
     body.dataset.phase = "open";
-    state.status = { kind: "error", text: `Couldn't set wallpaper. ${error}` };
+    state.status = { kind: "error", text: `${toLock ? "Couldn't set the lock screen." : "Couldn't set wallpaper."} ${error}` };
     renderCaption();
     return;
   }
 
+  if (result.scope === "lock" || result.lockScreen === true) {
+    state.settings.lockWallpaper = item.path;
+    state.lockImage = item.path;
+  }
+  if (result.scope === "lock") {
+    renderMinimap();
+    state.anchor = item.path;
+    state.status = { kind: "info", text: "Set on the lock screen" };
+    writeCaption(0);
+    await pause(380);
+    close();
+    return;
+  }
   state.snapshot.current = item.path;
+  for (const s of screens()) if (result.scope === "all" || s.editing) s.current = item.path;
+  renderMinimap();
   state.anchor = item.path;
-  state.status = { kind: "info", text: "Wallpaper set" };
+  let text = !multiScreen()
+    ? "Wallpaper set"
+    : result.scope === "all"
+      ? "Set on all screens"
+      : `Set on ${screenName(editingScreen())}`;
+  if (result.lockScreen === true) text = multiScreen() ? `${text} and the lock screen` : "Wallpaper and lock screen set";
+  const lockFailed = result.lockScreen === false;
+  if (lockFailed) text += ` · Lock screen didn't change${result.lockError ? `: ${result.lockError}` : ""}`;
+  state.status = { kind: lockFailed ? "error" : "info", text };
   writeCaption(0);
-  await new Promise((r) => setTimeout(r, 380));
+  await new Promise((r) => setTimeout(r, lockFailed ? 2600 : 380));
   close();
 }
 
@@ -1135,6 +1477,15 @@ function renderSettings() {
       b.setAttribute("aria-checked", String(s[group.dataset.setting] === b.dataset.value));
     }
   }
+  for (const select of document.querySelectorAll(".select[data-setting]")) {
+    const key = select.dataset.setting;
+    const options = [...select.querySelectorAll(".select-option")];
+    const chosen = options.find((o) => o.dataset.value === s[key]) || options[0];
+    for (const o of options) o.setAttribute("aria-selected", String(o === chosen));
+    select.querySelector(".select-value").textContent = chosen.textContent;
+    const note = document.querySelector(`[data-hint-for="${key}"]`);
+    if (note) note.textContent = chosen.dataset.hint || "";
+  }
   for (const input of document.querySelectorAll("input[data-setting]")) {
     const v = s[input.dataset.setting];
     if (input.type === "checkbox") input.checked = !!v;
@@ -1147,6 +1498,9 @@ function renderSettings() {
   }
   const err = state.snapshot?.shortcutError;
   if (err && !els.settingsError.textContent) els.settingsError.textContent = err;
+  if (state.view === "settings" && state.settingsTab && !visibleTabs().some((t) => t.dataset.tab === state.settingsTab)) {
+    setTab("general", { instant: true });
+  }
 }
 
 async function saveSettings(patch) {
@@ -1169,6 +1523,38 @@ async function saveSettings(patch) {
   }
 }
 
+function visibleTabs() {
+  return [...els.tabs.querySelectorAll(".tab")].filter((t) => multiScreen() || !t.hasAttribute("data-multi"));
+}
+
+function setTab(name, { instant = false, focus = false } = {}) {
+  const tabs = visibleTabs();
+  const target = tabs.find((t) => t.dataset.tab === name) || tabs[0];
+  if (state.settingsTab !== target.dataset.tab) closeSelects();
+  state.settingsTab = target.dataset.tab;
+  for (const t of els.tabs.querySelectorAll(".tab")) {
+    const on = t === target;
+    t.setAttribute("aria-selected", String(on));
+    t.tabIndex = on ? 0 : -1;
+  }
+  for (const pane of document.querySelectorAll(".pane")) pane.classList.toggle("active", pane.dataset.pane === state.settingsTab);
+  els.tabs.classList.toggle("instant", instant);
+  els.tabs.style.setProperty("--tab-x", `${target.offsetLeft}px`);
+  els.tabs.style.setProperty("--tab-w", `${target.offsetWidth}px`);
+  if (instant) {
+    void els.tabs.offsetWidth;
+    els.tabs.classList.remove("instant");
+  }
+  if (focus) target.focus({ preventScroll: true });
+}
+
+function stepTab(step) {
+  const tabs = visibleTabs();
+  const index = Math.max(0, tabs.findIndex((t) => t.dataset.tab === state.settingsTab));
+  const next = tabs[(index + step + tabs.length) % tabs.length];
+  setTab(next.dataset.tab, { focus: document.activeElement?.classList.contains("tab") });
+}
+
 function showSettings(from) {
   stopRecording();
   state.view = "settings";
@@ -1177,12 +1563,14 @@ function showSettings(from) {
   els.settingsBack.textContent = from === "picker" ? "Back to wallpapers" : "Done";
   els.settingsError.textContent = state.snapshot?.shortcutError || "";
   renderSettings();
+  setTab(state.settingsTab || "general", { instant: true });
   renderHints();
   requestAnimationFrame(() => els.settingsBack.focus({ preventScroll: true }));
 }
 
 function leaveSettings() {
   stopRecording();
+  closeSelects();
   if (state.settingsFrom === "picker") {
     state.view = "picker";
     body.dataset.view = "picker";
@@ -1240,6 +1628,38 @@ function handleRecording(e) {
   }
   state.recording = false;
   saveSettings({ shortcut: [...mods, key].join("+") });
+}
+
+function uiHintLabel() {
+  const s = state.settings || {};
+  if (s.uiHidden) return "Show UI";
+  return s.hideHints !== false && !s.hideTitle && !s.hideDetails ? "Hide hints" : "Hide UI";
+}
+
+function applyUiAttributes() {
+  const s = state.settings || {};
+  body.dataset.ui = s.uiHidden ? "hidden" : "shown";
+  body.dataset.hideHints = String(s.hideHints !== false);
+  body.dataset.hideTitle = String(!!s.hideTitle);
+  body.dataset.hideDetails = String(!!s.hideDetails);
+  body.dataset.hideMap = String(!!s.hideMap);
+  body.dataset.map = mapOn() ? "on" : "off";
+  body.dataset.lock = s.lockMode || "off";
+}
+
+function flashEdge() {
+  if (state.settings?.editGlow === false || !multiScreen() || editingLock() || !editingScreen()?.here) return;
+  const edge = $(".edit-glow");
+  edge.classList.remove("flash");
+  void edge.offsetWidth;
+  edge.classList.add("flash");
+}
+
+function toggleUi() {
+  state.settings.uiHidden = !state.settings.uiHidden;
+  applyUiAttributes();
+  renderHints();
+  saveSettings({ uiHidden: state.settings.uiHidden });
 }
 
 function toggleLayout() {
@@ -1300,16 +1720,40 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (state.view === "settings") {
-    if (e.key === "Escape") { e.preventDefault(); leaveSettings(); }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (document.querySelector(".select.open")) closeSelects();
+      else leaveSettings();
+    }
+    else if (e.ctrlKey && e.key === "Tab") { e.preventDefault(); closeSelects(); stepTab(e.shiftKey ? -1 : 1); }
+    else if (e.target.classList?.contains("tab") && TAB_KEYS[e.key]) {
+      e.preventDefault();
+      const tabs = visibleTabs();
+      if (e.key === "Home" || e.key === "End") setTab(tabs[e.key === "Home" ? 0 : tabs.length - 1].dataset.tab, { focus: true });
+      else stepTab(TAB_KEYS[e.key]);
+    }
     return;
   }
 
   const key = e.key;
   if ((e.ctrlKey || e.metaKey) && key === ",") { e.preventDefault(); showSettings("picker"); return; }
+  if (e.ctrlKey && key.toLowerCase() === "h") { e.preventDefault(); toggleUi(); return; }
+  if (e.ctrlKey && ARROW_DIRECTIONS[key]) {
+    e.preventDefault();
+    selectTile(neighbor(ARROW_DIRECTIONS[key]));
+    return;
+  }
+  if (e.ctrlKey && key.toLowerCase() === "l") { e.preventDefault(); selectLock(); return; }
+  if (e.ctrlKey && /^[1-9]$/.test(key)) {
+    e.preventDefault();
+    selectScreen(Number(key) - 1);
+    return;
+  }
+  if (moving) { e.preventDefault(); return; }
   if (layout() === "grid" ? gridKeys(key) : rowKeys(key, e)) { e.preventDefault(); return; }
 
   switch (key) {
-    case "Enter": e.preventDefault(); applySelected(); return;
+    case "Enter": e.preventDefault(); applySelected(e.shiftKey); return;
     case "Tab": e.preventDefault(); toggleLayout(); return;
     case "Escape":
       e.preventDefault();
@@ -1364,11 +1808,12 @@ window.addEventListener(
 
 els.picker.addEventListener("mousedown", (e) => {
   if (state.phase !== "open") return;
-  if (e.target.closest(".card, .tile, .caption, button")) return;
+  if (e.target.closest(".card, .tile, .caption, .minimap, button")) return;
   if (isExpanded()) collapse();
   else close();
 });
 els.settings.addEventListener("mousedown", (e) => {
+  if (document.querySelector(".select.open")) return;
   if (state.phase === "open" && !e.target.closest(".panel")) leaveSettings();
 });
 $("#welcome").addEventListener("mousedown", (e) => {
@@ -1395,20 +1840,102 @@ for (const group of document.querySelectorAll(".segmented[data-setting]")) {
     state.settings[key] = b.dataset.value;
     if (key === "dim") body.dataset.dim = b.dataset.value;
     renderSettings();
+    if (key === "mapSize" || key === "lockSpot") renderMinimap();
     saveSettings({ [key]: b.dataset.value });
   });
 }
 for (const input of document.querySelectorAll("input[data-setting]")) {
   input.addEventListener("change", () => {
     const v = input.type === "checkbox" ? input.checked : input.value;
+    state.settings[input.dataset.setting] = v;
+    applyUiAttributes();
     saveSettings({ [input.dataset.setting]: v });
   });
 }
+function closeSelects(except) {
+  for (const select of document.querySelectorAll(".select.open")) {
+    if (select === except) continue;
+    select.classList.remove("open");
+    select.querySelector(".select-button").setAttribute("aria-expanded", "false");
+  }
+}
+
+function openSelect(select) {
+  closeSelects(select);
+  const button = select.querySelector(".select-button");
+  const menu = select.querySelector(".select-menu");
+  const r = button.getBoundingClientRect();
+  const room = innerHeight - r.bottom - 100;
+  select.classList.toggle("up", room < menu.offsetHeight && r.top > menu.offsetHeight + 20);
+  select.classList.add("open");
+  button.setAttribute("aria-expanded", "true");
+  const chosen = select.querySelector('.select-option[aria-selected="true"]') || select.querySelector(".select-option");
+  chosen?.focus({ preventScroll: true });
+}
+
+function chooseOption(select, option) {
+  const key = select.dataset.setting;
+  closeSelects();
+  select.querySelector(".select-button").focus({ preventScroll: true });
+  if (state.settings[key] === option.dataset.value) return;
+  state.settings[key] = option.dataset.value;
+  applyUiAttributes();
+  renderSettings();
+  renderMinimap();
+  saveSettings({ [key]: option.dataset.value });
+}
+
+for (const select of document.querySelectorAll(".select[data-setting]")) {
+  const button = select.querySelector(".select-button");
+  const menu = select.querySelector(".select-menu");
+  button.addEventListener("click", () => (select.classList.contains("open") ? closeSelects() : openSelect(select)));
+  button.addEventListener("keydown", (e) => {
+    if (!["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openSelect(select);
+  });
+  menu.addEventListener("click", (e) => {
+    const option = e.target.closest(".select-option");
+    if (option) chooseOption(select, option);
+  });
+  menu.addEventListener("keydown", (e) => {
+    const options = [...menu.querySelectorAll(".select-option")];
+    const index = options.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      options[(index + step + options.length) % options.length].focus();
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      options[e.key === "Home" ? 0 : options.length - 1].focus();
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (index >= 0) chooseOption(select, options[index]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeSelects();
+      button.focus({ preventScroll: true });
+    } else if (e.key === "Tab") {
+      closeSelects();
+    }
+  });
+}
+document.addEventListener("mousedown", (e) => {
+  if (!e.target.closest?.(".select")) closeSelects();
+});
+
+els.tabs.addEventListener("click", (e) => {
+  const tab = e.target.closest(".tab");
+  if (tab) setTab(tab.dataset.tab);
+});
 els.shortcutButton.addEventListener("click", () => (state.recording ? stopRecording() : startRecording()));
 
 window.addEventListener("resize", () => {
   if (state.phase === "hidden") return;
   measure();
+  renderMinimap();
   if (state.view === "picker" && layout() === "slider") renderRow(null);
 });
 

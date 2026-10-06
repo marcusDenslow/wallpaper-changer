@@ -23,6 +23,7 @@
         <button class="button" type="button" data-action="pick-folder">Use another folder</button>
       </div>
     </div>
+    <nav class="minimap" id="minimap" aria-label="Screens"></nav>
   </main>
 
   <section class="welcome" id="welcome" aria-labelledby="welcomeTitle">
@@ -61,59 +62,157 @@
     <div class="panel">
       <h2 class="settings-title" id="settingsTitle">Settings</h2>
 
-      <div class="field">
-        <div class="field-text">
-          <span class="field-label">Wallpaper folder</span>
-          <span class="field-value path" id="folderPath"></span>
-        </div>
-        <button class="button" type="button" data-action="pick-folder">Change</button>
+      <div class="tabs" id="tabs" role="tablist" aria-label="Settings sections">
+        <button class="tab" type="button" role="tab" id="tab-general" aria-controls="pane-general" data-tab="general">General</button>
+        <button class="tab" type="button" role="tab" id="tab-appearance" aria-controls="pane-appearance" data-tab="appearance">Appearance</button>
+        <button class="tab" type="button" role="tab" id="tab-screens" aria-controls="pane-screens" data-tab="screens">Screens</button>
+        <span class="tab-indicator" aria-hidden="true"></span>
       </div>
 
-      <div class="field">
-        <div class="field-text">
-          <span class="field-label">Shortcut</span>
-          <span class="field-hint" id="shortcutHint">Opens the switcher from anywhere.</span>
+      <div class="panes">
+        <div class="pane" role="tabpanel" id="pane-general" aria-labelledby="tab-general" data-pane="general">
+          <div class="field">
+            <div class="field-text">
+              <span class="field-label">Wallpaper folder</span>
+              <span class="field-value path" id="folderPath"></span>
+            </div>
+            <button class="button" type="button" data-action="pick-folder">Change</button>
+          </div>
+
+          <div class="field">
+            <div class="field-text">
+              <span class="field-label">Shortcut</span>
+              <span class="field-hint" id="shortcutHint">Opens the switcher from anywhere.</span>
+            </div>
+            <button class="button shortcut" type="button" id="shortcutButton" aria-describedby="shortcutHint"></button>
+          </div>
+
+          <label class="field">
+            <span class="field-text">
+              <span class="field-label">Start with Windows</span>
+              <span class="field-hint">Waits quietly in the tray until you press the shortcut.</span>
+            </span>
+            <input class="switch" type="checkbox" data-setting="autostart">
+          </label>
+
+          <label class="field">
+            <span class="field-text">
+              <span class="field-label">Full-quality JPEGs</span>
+              <span class="field-hint">Stops Windows recompressing JPEGs to 85%.</span>
+            </span>
+            <input class="switch" type="checkbox" data-setting="fullJpegQuality">
+          </label>
         </div>
-        <button class="button shortcut" type="button" id="shortcutButton" aria-describedby="shortcutHint"></button>
+        <div class="pane" role="tabpanel" id="pane-appearance" aria-labelledby="tab-appearance" data-pane="appearance">
+          <div class="field">
+            <div class="field-text">
+              <span class="field-label">Layout</span>
+            </div>
+            <div class="segmented" role="radiogroup" aria-label="Layout" data-setting="layout">
+              <button type="button" role="radio" data-value="slider">Row</button>
+              <button type="button" role="radio" data-value="grid">Grid</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-text">
+              <span class="field-label">Background</span>
+              <span class="field-hint">Darkens the apps behind it.</span>
+            </div>
+            <div class="segmented" role="radiogroup" aria-label="Background" data-setting="dim">
+              <button type="button" role="radio" data-value="clear">Clear</button>
+              <button type="button" role="radio" data-value="soft">Soft</button>
+              <button type="button" role="radio" data-value="deep">Deep</button>
+            </div>
+          </div>
+
+          <label class="field">
+            <span class="field-text">
+              <span class="field-label">Hide interface</span>
+              <span class="field-hint">Ctrl + H toggles this while the switcher is open.</span>
+            </span>
+            <input class="switch" type="checkbox" data-setting="uiHidden">
+          </label>
+
+          <div class="field nested">
+            <div class="field-text">
+              <span class="field-label">What gets hidden</span>
+            </div>
+            <div class="chips" role="group" aria-label="What gets hidden">
+              <label class="chip"><input type="checkbox" data-setting="hideHints"><span>Keyboard hints</span></label>
+              <label class="chip"><input type="checkbox" data-setting="hideTitle"><span>Names</span></label>
+              <label class="chip"><input type="checkbox" data-setting="hideDetails"><span>Details</span></label>
+              <label class="chip" data-needs-map><input type="checkbox" data-setting="hideMap"><span>Screen map</span></label>
+            </div>
+          </div>
+        </div>
+        <div class="pane" role="tabpanel" id="pane-screens" aria-labelledby="tab-screens" data-pane="screens">
+          <label class="field" data-multi>
+            <span class="field-text">
+              <span class="field-label">Enter sets only this screen</span>
+              <span class="field-hint">Swaps what Enter and Shift + Enter do.</span>
+            </span>
+            <input class="switch" type="checkbox" data-setting="enterThisScreen">
+          </label>
+
+          <label class="field" data-multi>
+            <span class="field-text">
+              <span class="field-label">Move to the screen you edit</span>
+              <span class="field-hint">Off: stays on the screen you opened it on.</span>
+            </span>
+            <input class="switch" type="checkbox" data-setting="followScreen">
+          </label>
+
+          <label class="field" data-multi>
+            <span class="field-text">
+              <span class="field-label">Flash when switching screens</span>
+              <span class="field-hint">A quick white edge shows which screen you picked.</span>
+            </span>
+            <input class="switch" type="checkbox" data-setting="editGlow">
+          </label>
+
+          <div class="field" data-needs-map>
+            <div class="field-text">
+              <span class="field-label">Screen map size</span>
+              <span class="field-hint">The map in the corner.</span>
+            </div>
+            <div class="segmented" role="radiogroup" aria-label="Screen map size" data-setting="mapSize">
+              <button type="button" role="radio" data-value="small">Small</button>
+              <button type="button" role="radio" data-value="medium">Medium</button>
+              <button type="button" role="radio" data-value="large">Large</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-text">
+              <span class="field-label" id="lockLabel">Lock screen</span>
+              <span class="field-hint" data-hint-for="lockMode"></span>
+            </div>
+            <div class="select" data-setting="lockMode">
+              <button class="select-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="lockLabel lockValue">
+                <span class="select-value" id="lockValue"></span>
+                <svg class="select-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5"/></svg>
+              </button>
+              <div class="select-menu" role="listbox" aria-labelledby="lockLabel">
+                <div class="select-option" role="option" tabindex="-1" data-value="off" data-hint="Wallpaper Switcher leaves it as it is.">Leave it alone</div>
+                <div class="select-option" role="option" tabindex="-1" data-value="main" data-hint="Changes along with your main screen.">Same as main screen</div>
+                <div class="select-option" role="option" tabindex="-1" data-value="own" data-hint="Pick it on the screen map, or press Ctrl + L.">Its own wallpaper</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="field" data-needs-own>
+            <div class="field-text">
+              <span class="field-label">Lock screen on the map</span>
+              <span class="field-hint">Where its tile sits next to your screens.</span>
+            </div>
+            <div class="segmented" role="radiogroup" aria-label="Lock screen on the map" data-setting="lockSpot">
+              <button type="button" role="radio" data-value="left">Bottom left</button>
+              <button type="button" role="radio" data-value="above">Above</button>
+            </div>
+          </div>
+        </div>
       </div>
-
-      <div class="field">
-        <div class="field-text">
-          <span class="field-label">Layout</span>
-        </div>
-        <div class="segmented" role="radiogroup" aria-label="Layout" data-setting="layout">
-          <button type="button" role="radio" data-value="slider">Row</button>
-          <button type="button" role="radio" data-value="grid">Grid</button>
-        </div>
-      </div>
-
-      <div class="field">
-        <div class="field-text">
-          <span class="field-label">Background</span>
-          <span class="field-hint">How much the switcher darkens the apps behind it.</span>
-        </div>
-        <div class="segmented" role="radiogroup" aria-label="Background" data-setting="dim">
-          <button type="button" role="radio" data-value="clear">Clear</button>
-          <button type="button" role="radio" data-value="soft">Soft</button>
-          <button type="button" role="radio" data-value="deep">Deep</button>
-        </div>
-      </div>
-
-      <label class="field">
-        <span class="field-text">
-          <span class="field-label">Start with Windows</span>
-          <span class="field-hint">Waits quietly in the tray until you press the shortcut.</span>
-        </span>
-        <input class="switch" type="checkbox" data-setting="autostart">
-      </label>
-
-      <label class="field">
-        <span class="field-text">
-          <span class="field-label">Full-quality JPEGs</span>
-          <span class="field-hint">Windows normally recompresses JPEG wallpapers to about 85% quality.</span>
-        </span>
-        <input class="switch" type="checkbox" data-setting="fullJpegQuality">
-      </label>
 
       <p class="settings-error" id="settingsError" role="alert"></p>
 
@@ -123,6 +222,8 @@
       </div>
     </div>
   </section>
+
+  <div class="edit-glow" aria-hidden="true"></div>
 
   <footer class="hints" id="hints"></footer>
 

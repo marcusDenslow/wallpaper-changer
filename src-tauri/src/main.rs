@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod autostart;
+mod glow;
 mod library;
 mod settings;
 mod wallpaper;
@@ -8,12 +9,12 @@ mod wallpaper;
 use serde::Serialize;
 use settings::Settings;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow, WindowEvent, Wry};
+use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, State, WebviewWindow, WindowEvent, Wry};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 
@@ -23,6 +24,10 @@ struct AppState {
     visible: AtomicBool,
     dialog_open: AtomicBool,
     shown_at: Mutex<Instant>,
+    overlay_rect: Mutex<Option<[i32; 4]>>,
+    target_rect: Mutex<Option<[i32; 4]>>,
+    editing_lock: AtomicBool,
+    glow_turn: AtomicU64,
     open_when_ready: AtomicBool,
     shortcut_error: Mutex<Option<String>>,
     tray_open_item: Mutex<Option<MenuItem<Wry>>>,
@@ -34,8 +39,28 @@ struct Snapshot {
     settings: Settings,
     folder: Option<String>,
     current: Option<String>,
+    screens: Vec<ScreenInfo>,
+    editing_lock: bool,
     first_run: bool,
     shortcut_error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenInfo {
+    number: usize,
+    here: bool,
+    editing: bool,
+    rect: [i32; 4],
+    current: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Applied {
+    scope: &'static str,
+    lock_screen: Option<bool>,
+    lock_error: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -47,17 +72,55 @@ fn overlay(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("main")
 }
 
-fn cover_monitor_under_cursor(win: &WebviewWindow) {
-    let monitor = win
-        .cursor_position()
+fn glow_target(app: &AppHandle) -> Option<[i32; 4]> {
+    let state = app.state::<AppState>();
+    if !state.visible.load(SeqCst) || state.editing_lock.load(SeqCst) || !current_settings(app).edit_glow {
+        return None;
+    }
+    let target = (*state.target_rect.lock().unwrap())?;
+    let (x, y) = center(target);
+    let here = *state.overlay_rect.lock().unwrap();
+    match here {
+        Some([l, t, r, b]) if x >= l && x < r && y >= t && y < b => None,
+        _ => Some(target),
+    }
+}
+
+fn flash_glow(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let turn = state.glow_turn.fetch_add(1, SeqCst) + 1;
+    let Some(rect) = glow_target(app) else { return };
+    let handle = app.clone();
+    glow::flash(rect, move || handle.state::<AppState>().glow_turn.load(SeqCst) == turn);
+}
+
+fn hide_glow(app: &AppHandle) {
+    app.state::<AppState>().glow_turn.fetch_add(1, SeqCst);
+}
+
+fn monitor_rect(monitor: &Monitor) -> [i32; 4] {
+    let (pos, size) = (monitor.position(), monitor.size());
+    [pos.x, pos.y, pos.x + size.width as i32, pos.y + size.height as i32]
+}
+
+fn center(rect: [i32; 4]) -> (i32, i32) {
+    ((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2)
+}
+
+fn cover(app: &AppHandle, win: &WebviewWindow, monitor: &Monitor) {
+    let (pos, size) = (*monitor.position(), *monitor.size());
+    let _ = win.set_position(pos);
+    let _ = win.set_size(size);
+    let _ = win.set_position(pos);
+    *app.state::<AppState>().overlay_rect.lock().unwrap() = Some(monitor_rect(monitor));
+}
+
+fn monitor_under_cursor(win: &WebviewWindow) -> Option<Monitor> {
+    win.cursor_position()
         .ok()
         .and_then(|p| win.monitor_from_point(p.x, p.y).ok().flatten())
         .or_else(|| win.current_monitor().ok().flatten())
-        .or_else(|| win.primary_monitor().ok().flatten());
-    if let Some(m) = monitor {
-        let _ = win.set_position(PhysicalPosition::new(m.position().x, m.position().y));
-        let _ = win.set_size(PhysicalSize::new(m.size().width, m.size().height));
-    }
+        .or_else(|| win.primary_monitor().ok().flatten())
 }
 
 fn show_overlay(app: &AppHandle, view: &'static str) {
@@ -65,8 +128,16 @@ fn show_overlay(app: &AppHandle, view: &'static str) {
     let state = app.state::<AppState>();
     if !state.visible.swap(true, SeqCst) {
         *state.shown_at.lock().unwrap() = Instant::now();
-        cover_monitor_under_cursor(&win);
+        let monitor = monitor_under_cursor(&win);
+        if let Some(m) = &monitor {
+            cover(app, &win, m);
+        }
         let _ = win.show();
+        if let Some(m) = &monitor {
+            cover(app, &win, m);
+        }
+        *state.target_rect.lock().unwrap() = monitor.as_ref().map(monitor_rect);
+        state.editing_lock.store(false, SeqCst);
     }
     let _ = win.set_always_on_top(true);
     let _ = win.unminimize();
@@ -183,15 +254,52 @@ fn current_settings(app: &AppHandle) -> Settings {
     app.state::<AppState>().settings.lock().unwrap().clone()
 }
 
+fn sorted_screens() -> Vec<wallpaper::Screen> {
+    let mut screens = wallpaper::screens();
+    screens.sort_by_key(|s| (s.rect[0], s.rect[1]));
+    screens
+}
+
+fn screen_at(screens: &[wallpaper::Screen], rect: Option<[i32; 4]>) -> Option<usize> {
+    let (x, y) = center(rect?);
+    screens.iter().position(|s| s.contains(x, y))
+}
+
+fn screen_here(app: &AppHandle, screens: &[wallpaper::Screen]) -> Option<usize> {
+    screen_at(screens, *app.state::<AppState>().overlay_rect.lock().unwrap())
+}
+
+fn screen_editing(app: &AppHandle, screens: &[wallpaper::Screen]) -> Option<usize> {
+    screen_at(screens, *app.state::<AppState>().target_rect.lock().unwrap()).or_else(|| screen_here(app, screens))
+}
+
 fn snapshot(app: &AppHandle) -> Snapshot {
     let state = app.state::<AppState>();
     let settings = current_settings(app);
     let folder = settings::wallpaper_folder(app, &settings);
-    let current = wallpaper::current().or_else(|| settings.last_wallpaper.clone());
+    let screens = sorted_screens();
+    let here = screen_here(app, &screens);
+    let editing = screen_editing(app, &screens);
+    let current = editing
+        .and_then(|i| screens[i].wallpaper.clone())
+        .or_else(|| screens.iter().find_map(|s| s.wallpaper.clone()))
+        .or_else(|| settings.last_wallpaper.clone());
     let shortcut_error = state.shortcut_error.lock().unwrap().clone();
     Snapshot {
         folder: folder.map(|f| f.to_string_lossy().into_owned()),
         current: current.map(|c| c.to_string_lossy().into_owned()),
+        screens: screens
+            .iter()
+            .enumerate()
+            .map(|(i, s)| ScreenInfo {
+                number: i + 1,
+                here: Some(i) == here,
+                editing: Some(i) == editing,
+                rect: s.rect,
+                current: s.wallpaper.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            })
+            .collect(),
+        editing_lock: state.editing_lock.load(SeqCst) && settings.lock_mode == "own",
         first_run: state.first_run.load(SeqCst),
         shortcut_error,
         settings,
@@ -232,7 +340,8 @@ async fn list_wallpapers(app: AppHandle) -> Result<Vec<library::Wallpaper>, Stri
 #[tauri::command]
 async fn thumbnail(app: AppHandle, path: String) -> Result<library::Thumb, String> {
     let source = PathBuf::from(path);
-    if !library::is_image(&source) {
+    let transcoded = source.file_name().is_some_and(|name| name == "TranscodedWallpaper");
+    if !library::is_image(&source) && !transcoded {
         return Err("Not a supported image".into());
     }
     let cache = cache_dir(&app)?;
@@ -242,22 +351,115 @@ async fn thumbnail(app: AppHandle, path: String) -> Result<library::Thumb, Strin
 }
 
 #[tauri::command]
-async fn apply_wallpaper(app: AppHandle, path: String) -> Result<(), String> {
+async fn apply_wallpaper(app: AppHandle, path: String, everywhere: bool) -> Result<Applied, String> {
     let source = PathBuf::from(path);
     if !library::is_image(&source) {
         return Err("Not a supported image".into());
     }
-    let full_quality = current_settings(&app).full_jpeg_quality;
-    let target = source.clone();
-    tauri::async_runtime::spawn_blocking(move || wallpaper::set(&target, full_quality))
-        .await
-        .map_err(|e| e.to_string())??;
-
+    let settings = current_settings(&app);
     let state = app.state::<AppState>();
+    let cache = cache_dir(&app);
+
+    if settings.lock_mode == "own" && state.editing_lock.load(SeqCst) {
+        let cache = cache?;
+        let image = source.clone();
+        tauri::async_runtime::spawn_blocking(move || wallpaper::set_lock_screen(&image, &cache))
+            .await
+            .map_err(|e| e.to_string())??;
+        let mut settings = state.settings.lock().unwrap();
+        settings.lock_wallpaper = Some(source);
+        let _ = settings::save(&app, &settings);
+        return Ok(Applied { scope: "lock", lock_screen: Some(true), lock_error: None });
+    }
+
+    let full_quality = settings.full_jpeg_quality;
+    let follow_lock = settings.lock_mode == "main";
+    let handle = app.clone();
+    let image = source.clone();
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        let screens = sorted_screens();
+        let screen = if everywhere || screens.len() < 2 {
+            None
+        } else {
+            screen_editing(&handle, &screens).map(|i| screens[i].clone())
+        };
+        wallpaper::set(&image, screen.as_ref().map(|s| s.id.as_str()), full_quality)?;
+        let mut applied = Applied {
+            scope: if screen.is_some() { "screen" } else { "all" },
+            lock_screen: None,
+            lock_error: None,
+        };
+        if follow_lock && screen.as_ref().map_or(true, |s| s.is_primary()) {
+            let result = cache.and_then(|dir| wallpaper::set_lock_screen(&image, &dir));
+            applied.lock_screen = Some(result.is_ok());
+            applied.lock_error = result.err();
+        }
+        Ok::<_, String>(applied)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
     let mut settings = state.settings.lock().unwrap();
+    if applied.lock_screen == Some(true) {
+        settings.lock_wallpaper = Some(source.clone());
+    }
     settings.last_wallpaper = Some(source);
     let _ = settings::save(&app, &settings);
-    Ok(())
+    Ok(applied)
+}
+
+#[tauri::command]
+fn select_screen(app: AppHandle, index: usize) -> Snapshot {
+    let screens = sorted_screens();
+    let Some(screen) = screens.get(index) else { return snapshot(&app) };
+    let state = app.state::<AppState>();
+    *state.target_rect.lock().unwrap() = Some(screen.rect);
+    state.editing_lock.store(false, SeqCst);
+
+    if current_settings(&app).follow_screen {
+        if let Some(win) = overlay(&app) {
+            let (x, y) = center(screen.rect);
+            let monitor = win.available_monitors().ok().and_then(|monitors| {
+                monitors.into_iter().find(|m| {
+                    let [l, t, r, b] = monitor_rect(m);
+                    x >= l && x < r && y >= t && y < b
+                })
+            });
+            if let Some(monitor) = monitor {
+                let from = *state.overlay_rect.lock().unwrap();
+                let cursor = win.cursor_position().ok();
+                cover(&app, &win, &monitor);
+                let _ = win.set_focus();
+                if let (Some([l, t, r, b]), Some(cursor)) = (from, cursor) {
+                    let fx = ((cursor.x - l as f64) / (r - l).max(1) as f64).clamp(0.0, 1.0);
+                    let fy = ((cursor.y - t as f64) / (b - t).max(1) as f64).clamp(0.0, 1.0);
+                    let size = monitor.size();
+                    let _ = win.set_cursor_position(PhysicalPosition::new(
+                        (fx * size.width as f64).round() as i32,
+                        (fy * size.height as f64).round() as i32,
+                    ));
+                }
+            }
+        }
+    }
+    flash_glow(&app);
+    snapshot(&app)
+}
+
+#[tauri::command]
+fn select_lock(app: AppHandle) -> Snapshot {
+    if current_settings(&app).lock_mode == "own" {
+        app.state::<AppState>().editing_lock.store(true, SeqCst);
+    }
+    snapshot(&app)
+}
+
+#[tauri::command]
+async fn lock_screen_image(app: AppHandle) -> Option<String> {
+    let known = current_settings(&app).lock_wallpaper.filter(|p| p.is_file());
+    let cache = cache_dir(&app).ok()?;
+    let read = tauri::async_runtime::spawn_blocking(move || wallpaper::lock_screen_image(&cache)).await.ok().flatten();
+    read.or(known).map(|p| p.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -265,11 +467,21 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     let previous = current_settings(&app);
     let mut next = settings;
     next.last_wallpaper = previous.last_wallpaper.clone();
+    next.lock_wallpaper = previous.lock_wallpaper.clone();
+    if !matches!(next.lock_mode.as_str(), "off" | "main" | "own") {
+        next.lock_mode = "off".into();
+    }
+    if !matches!(next.lock_spot.as_str(), "left" | "above") {
+        next.lock_spot = "left".into();
+    }
     if !matches!(next.layout.as_str(), "slider" | "grid") {
         next.layout = "slider".into();
     }
     if !matches!(next.dim.as_str(), "clear" | "soft" | "deep") {
         next.dim = "soft".into();
+    }
+    if !matches!(next.map_size.as_str(), "small" | "medium" | "large") {
+        next.map_size = "medium".into();
     }
 
     let mut problems = Vec::new();
@@ -291,6 +503,9 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
 
     settings::save(&app, &next)?;
     let folder_changed = next.folder != previous.folder;
+    if next.lock_mode != "own" {
+        state.editing_lock.store(false, SeqCst);
+    }
     *state.settings.lock().unwrap() = next;
     update_tray_label(&app);
     if folder_changed {
@@ -354,6 +569,7 @@ async fn pick_folder(app: AppHandle) -> Option<String> {
 #[tauri::command]
 fn hide_overlay(app: AppHandle, state: State<AppState>) {
     state.visible.store(false, SeqCst);
+    hide_glow(&app);
     if let Some(win) = overlay(&app) {
         let _ = win.hide();
     }
@@ -385,6 +601,10 @@ fn main() {
             visible: AtomicBool::new(false),
             dialog_open: AtomicBool::new(false),
             shown_at: Mutex::new(Instant::now()),
+            overlay_rect: Mutex::new(None),
+            target_rect: Mutex::new(None),
+            editing_lock: AtomicBool::new(false),
+            glow_turn: AtomicU64::new(0),
             open_when_ready: AtomicBool::new(!started_quietly),
             shortcut_error: Mutex::new(None),
             tray_open_item: Mutex::new(None),
@@ -410,6 +630,12 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() != "main" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                }
+                return;
+            }
             let app = window.app_handle();
             match event {
                 WindowEvent::CloseRequested { api, .. } => {
@@ -432,6 +658,9 @@ fn main() {
             list_wallpapers,
             thumbnail,
             apply_wallpaper,
+            select_screen,
+            select_lock,
+            lock_screen_image,
             save_settings,
             finish_welcome,
             open_folder,

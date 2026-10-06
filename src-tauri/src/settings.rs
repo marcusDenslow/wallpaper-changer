@@ -12,9 +12,21 @@ pub struct Settings {
     pub shortcut: String,
     pub layout: String,
     pub dim: String,
+    pub enter_this_screen: bool,
+    pub follow_screen: bool,
+    pub map_size: String,
+    pub ui_hidden: bool,
+    pub hide_hints: bool,
+    pub hide_title: bool,
+    pub hide_details: bool,
+    pub hide_map: bool,
+    pub lock_mode: String,
+    pub lock_spot: String,
+    pub edit_glow: bool,
     pub autostart: bool,
     pub full_jpeg_quality: bool,
     pub last_wallpaper: Option<PathBuf>,
+    pub lock_wallpaper: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -24,9 +36,21 @@ impl Default for Settings {
             shortcut: DEFAULT_SHORTCUT.into(),
             layout: "slider".into(),
             dim: "soft".into(),
+            enter_this_screen: false,
+            follow_screen: true,
+            map_size: "medium".into(),
+            ui_hidden: false,
+            hide_hints: true,
+            hide_title: false,
+            hide_details: false,
+            hide_map: false,
+            lock_mode: "off".into(),
+            lock_spot: "left".into(),
+            edit_glow: true,
             autostart: false,
             full_jpeg_quality: true,
             last_wallpaper: None,
+            lock_wallpaper: None,
         }
     }
 }
