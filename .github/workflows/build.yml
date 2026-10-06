@@ -1,0 +1,26 @@
+name: Build installer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm install
+      - run: npm run tauri build
+      - run: makensis installer\wallpaper-switcher.nsi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wallpaper-switcher-setup
+          path: installer/*.exe

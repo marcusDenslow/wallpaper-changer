@@ -1,0 +1,62 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Wallpaper Switcher",
+  "mainBinaryName": "wallswitch",
+  "version": "1.0.0",
+  "identifier": "com.wallpaperswitcher.app",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Wallpaper Switcher",
+        "url": "index.html",
+        "visible": false,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "focus": true,
+        "width": 1280,
+        "height": 800,
+        "backgroundColor": [
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "Wallpaper Switcher",
+    "copyright": "\u00a9 2026 Wallpaper Switcher",
+    "category": "Utility",
+    "shortDescription": "Switch wallpapers with one shortcut",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
+  }
+}

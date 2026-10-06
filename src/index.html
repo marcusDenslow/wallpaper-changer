@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wallpaper Switcher</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-phase="hidden" data-view="picker" data-layout="slider" data-dim="soft">
+  <div class="backdrop" aria-hidden="true"></div>
+
+  <main class="picker" id="picker">
+    <div class="stage" id="stage">
+      <div class="track" id="track" role="listbox" aria-label="Wallpapers"></div>
+      <div class="grid" id="grid" role="listbox" aria-label="Wallpapers"></div>
+    </div>
+
+    <div class="caption" id="caption" aria-live="polite">
+      <h1 class="title" id="title"></h1>
+      <p class="meta" id="meta"></p>
+      <div class="empty-actions" id="emptyActions" hidden>
+        <button class="button primary" type="button" data-action="open-folder">Open folder</button>
+        <button class="button" type="button" data-action="pick-folder">Use another folder</button>
+      </div>
+    </div>
+  </main>
+
+  <section class="welcome" id="welcome" aria-labelledby="welcomeTitle">
+    <div class="welcome-inner">
+      <h1 class="welcome-title reveal" id="welcomeTitle">Wallpaper Switcher</h1>
+      <p class="welcome-lead reveal">Press <span class="keys" id="welcomeKeys"></span> from anywhere to open it.</p>
+
+      <div class="welcome-card reveal">
+        <div class="field">
+          <div class="field-text">
+            <span class="field-label">Wallpaper folder</span>
+            <span class="field-value path" id="welcomeFolder"></span>
+            <span class="field-hint" id="welcomeFolderHint"></span>
+          </div>
+          <div class="field-actions">
+            <button class="button" type="button" data-action="open-folder">Open</button>
+            <button class="button" type="button" data-action="pick-folder">Change</button>
+          </div>
+        </div>
+        <label class="field">
+          <span class="field-text">
+            <span class="field-label">Start with Windows</span>
+            <span class="field-hint">Waits in the tray so the shortcut always works.</span>
+          </span>
+          <input class="switch" type="checkbox" id="welcomeAutostart" checked>
+        </label>
+      </div>
+
+      <div class="welcome-actions reveal">
+        <button class="button primary large" type="button" data-action="finish-welcome" id="welcomeDone">Show my wallpapers</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="settings" id="settings" aria-labelledby="settingsTitle">
+    <div class="panel">
+      <h2 class="settings-title" id="settingsTitle">Settings</h2>
+
+      <div class="field">
+        <div class="field-text">
+          <span class="field-label">Wallpaper folder</span>
+          <span class="field-value path" id="folderPath"></span>
+        </div>
+        <button class="button" type="button" data-action="pick-folder">Change</button>
+      </div>
+
+      <div class="field">
+        <div class="field-text">
+          <span class="field-label">Shortcut</span>
+          <span class="field-hint" id="shortcutHint">Opens the switcher from anywhere.</span>
+        </div>
+        <button class="button shortcut" type="button" id="shortcutButton" aria-describedby="shortcutHint"></button>
+      </div>
+
+      <div class="field">
+        <div class="field-text">
+          <span class="field-label">Layout</span>
+        </div>
+        <div class="segmented" role="radiogroup" aria-label="Layout" data-setting="layout">
+          <button type="button" role="radio" data-value="slider">Row</button>
+          <button type="button" role="radio" data-value="grid">Grid</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-text">
+          <span class="field-label">Background</span>
+          <span class="field-hint">How much the switcher darkens the apps behind it.</span>
+        </div>
+        <div class="segmented" role="radiogroup" aria-label="Background" data-setting="dim">
+          <button type="button" role="radio" data-value="clear">Clear</button>
+          <button type="button" role="radio" data-value="soft">Soft</button>
+          <button type="button" role="radio" data-value="deep">Deep</button>
+        </div>
+      </div>
+
+      <label class="field">
+        <span class="field-text">
+          <span class="field-label">Start with Windows</span>
+          <span class="field-hint">Waits quietly in the tray until you press the shortcut.</span>
+        </span>
+        <input class="switch" type="checkbox" data-setting="autostart">
+      </label>
+
+      <label class="field">
+        <span class="field-text">
+          <span class="field-label">Full-quality JPEGs</span>
+          <span class="field-hint">Windows normally recompresses JPEG wallpapers to about 85% quality.</span>
+        </span>
+        <input class="switch" type="checkbox" data-setting="fullJpegQuality">
+      </label>
+
+      <p class="settings-error" id="settingsError" role="alert"></p>
+
+      <div class="settings-footer">
+        <button class="button primary" type="button" data-action="settings-back" id="settingsBack">Back to wallpapers</button>
+        <button class="button quiet" type="button" data-action="quit">Quit Wallpaper Switcher</button>
+      </div>
+    </div>
+  </section>
+
+  <footer class="hints" id="hints"></footer>
+
+  <div class="apply-layer" id="applyLayer" aria-hidden="true"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
