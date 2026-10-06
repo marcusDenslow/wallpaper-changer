@@ -28,7 +28,7 @@ VIAddVersionKey "FileDescription" "${APP_NAME} Setup"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
 VIAddVersionKey "ProductVersion" "${APP_VERSION}"
 VIAddVersionKey "CompanyName" "${APP_NAME}"
-VIAddVersionKey "LegalCopyright" "© 2026 ${APP_NAME}"
+VIAddVersionKey "LegalCopyright" "Copyright 2026 ${APP_NAME}"
 
 !include MUI2.nsh
 !include LogicLib.nsh
