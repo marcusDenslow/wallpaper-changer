@@ -47,7 +47,25 @@ enum UserEvent {
     Hotkey,
     TrayClick,
     Menu(String),
+    /// Forwarded request (from a second instance, or from the tray process to the overlay).
     Instance(u8),
+    ChildExited,
+}
+
+/// Two processes: a tiny tray process (shortcut + tray icon) that lives all day, and an
+/// overlay process that it starts on demand and that exits when the switcher closes, so
+/// every byte the GPU driver allocated goes back to Windows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Tray,
+    Overlay,
+}
+
+fn view_arg(v: View) -> &'static str {
+    match v {
+        View::Settings => "settings",
+        _ => "picker",
+    }
 }
 
 struct Overlay {
@@ -76,6 +94,9 @@ struct App {
     quit: bool,
     started_quietly: bool,
     initialized: bool,
+    role: Role,
+    initial_view: View,
+    child: Option<std::process::Child>,
 }
 
 /// What the UI can ask of the app during a frame.
@@ -94,6 +115,7 @@ struct HostCtx<'a> {
     want_hide: &'a mut bool,
     quit: &'a mut bool,
     overlay_size: (u32, u32),
+    role: Role,
 }
 
 fn register_shortcut(
@@ -241,6 +263,14 @@ impl Host for HostCtx<'_> {
         let hotkey = &mut *self.hotkey;
         let result = self.core.save_settings(next, &mut |accel, prev| register_shortcut(hotkeys, hotkey, accel, prev));
         update_tray_label(self.tray_open, &self.core.settings.shortcut);
+        if self.role == Role::Overlay {
+            // we only checked the shortcut is free; the tray process owns it
+            if let (Some(m), Some(h)) = (hotkeys, hotkey.take()) {
+                let _ = m.unregister(h);
+            }
+            #[cfg(windows)]
+            instance::signal(instance::TRAY_RELOAD);
+        }
         result
     }
 
@@ -266,6 +296,10 @@ impl Host for HostCtx<'_> {
 
     fn quit(&mut self) {
         *self.quit = true;
+        #[cfg(windows)]
+        if self.role == Role::Overlay {
+            instance::signal(instance::TRAY_QUIT);
+        }
     }
 }
 
@@ -364,6 +398,7 @@ impl App {
             want_hide,
             quit,
             overlay_size: size,
+            role: Role::Overlay,
         }
     }
 
@@ -381,6 +416,7 @@ impl App {
             &mut self.want_hide,
             &mut self.quit,
         );
+        host.role = self.role;
         f(&mut self.ui, &mut host)
     }
 
@@ -452,6 +488,71 @@ impl App {
         self.request_redraw();
     }
 
+    fn child_alive(&mut self) -> bool {
+        self.child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)))
+    }
+
+    /// Tray process: forward to the running overlay, or start one.
+    fn route(&mut self, event_loop: &ActiveEventLoop, view: View, toggle: bool) {
+        if self.role == Role::Overlay {
+            if toggle {
+                self.toggle(event_loop);
+            } else {
+                self.show_overlay(event_loop, view);
+            }
+            return;
+        }
+        #[cfg(windows)]
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(windows::Win32::UI::WindowsAndMessaging::ASFW_ANY);
+        }
+        if self.child_alive() {
+            #[cfg(windows)]
+            instance::signal(if toggle {
+                instance::OVERLAY_TOGGLE
+            } else if view == View::Settings {
+                instance::OVERLAY_SETTINGS
+            } else {
+                instance::OVERLAY_OPEN
+            });
+            return;
+        }
+        let Ok(exe) = std::env::current_exe() else { return };
+        match std::process::Command::new(exe).arg("--overlay").arg(view_arg(view)).spawn() {
+            Ok(child) => {
+                let pid = child.id();
+                self.child = Some(child);
+                let proxy = self.proxy.clone();
+                std::thread::spawn(move || {
+                    #[cfg(windows)]
+                    unsafe {
+                        use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE};
+                        if let Ok(h) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+                            WaitForSingleObject(h, INFINITE);
+                            let _ = windows::Win32::Foundation::CloseHandle(h);
+                        }
+                    }
+                    let _ = proxy.send_event(UserEvent::ChildExited);
+                });
+            }
+            Err(e) => log(format!("couldn't start overlay: {e}")),
+        }
+    }
+
+    /// Tray process: pick up settings the overlay saved (shortcut, start-up).
+    fn reload_settings(&mut self) {
+        let next = settings::load();
+        if next.shortcut != self.core.settings.shortcut || self.hotkey.is_none() {
+            let prev = self.core.settings.shortcut.clone();
+            match register_shortcut(&self.hotkeys, &mut self.hotkey, &next.shortcut, Some(&prev)) {
+                Ok(()) => self.core.shortcut_error = None,
+                Err(e) => self.core.shortcut_error = Some(e),
+            }
+        }
+        self.core.settings = next;
+        update_tray_label(&self.tray_open, &self.core.settings.shortcut);
+    }
+
     fn toggle(&mut self, event_loop: &ActiveEventLoop) {
         if self.visible() && !matches!(self.ui.phase, ui::Phase::Closing | ui::Phase::Hidden) {
             self.request_close();
@@ -506,6 +607,7 @@ impl App {
                 want_hide: &mut self.want_hide,
                 quit: &mut self.quit,
                 overlay_size: (window.inner_size().width, window.inner_size().height),
+                role: self.role,
             };
             let ui_state = &mut self.ui;
             let thumbs = &mut self.thumbs;
@@ -544,6 +646,8 @@ impl App {
             self.destroy_overlay();
             if let Some(v) = self.pending_open.take() {
                 self.show_overlay(event_loop, v);
+            } else if self.role == Role::Overlay {
+                event_loop.exit();
             }
         }
     }
@@ -555,8 +659,16 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         self.initialized = true;
-        // global shortcut
         self.hotkeys = GlobalHotKeyManager::new().ok();
+        if self.role == Role::Overlay {
+            let view = self.initial_view;
+            self.show_overlay(event_loop, view);
+            if self.overlay.is_none() {
+                event_loop.exit();
+            }
+            return;
+        }
+        // global shortcut
         let shortcut = self.core.settings.shortcut.clone();
         if let Err(e) = register_shortcut(&self.hotkeys, &mut self.hotkey, &shortcut, None) {
             self.core.shortcut_error = Some(e);
@@ -576,7 +688,7 @@ impl ApplicationHandler<UserEvent> for App {
         update_tray_label(&self.tray_open, &shortcut);
         self.core.warm_thumbnails();
         if !self.started_quietly {
-            self.show_overlay(event_loop, View::Picker);
+            self.route(event_loop, View::Picker, false);
         }
     }
 
@@ -591,18 +703,25 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.request_redraw();
             }
-            UserEvent::Hotkey | UserEvent::TrayClick => self.toggle(event_loop),
+            UserEvent::Hotkey | UserEvent::TrayClick => self.route(event_loop, View::Picker, true),
             UserEvent::Menu(id) => match id.as_str() {
-                "open" => self.show_overlay(event_loop, View::Picker),
-                "settings" => self.show_overlay(event_loop, View::Settings),
-                "quit" => self.quit = true,
+                "open" => self.route(event_loop, View::Picker, false),
+                "settings" => self.route(event_loop, View::Settings, false),
+                "quit" => self.quit_all(),
                 _ => {}
             },
-            UserEvent::Instance(kind) => match kind {
-                0 => self.toggle(event_loop),
-                1 => self.show_overlay(event_loop, View::Settings),
-                _ => self.show_overlay(event_loop, View::Picker),
+            UserEvent::Instance(kind) => match (self.role, kind) {
+                (_, 0) => self.route(event_loop, View::Picker, true),
+                (_, 1) => self.route(event_loop, View::Settings, false),
+                (_, 2) => self.route(event_loop, View::Picker, false),
+                (Role::Tray, 3) => self.reload_settings(),
+                (Role::Tray, _) => self.quit_all(),
+                (Role::Overlay, _) => self.quit = true,
             },
+            UserEvent::ChildExited => {
+                self.child = None;
+                self.reload_settings();
+            }
         }
         self.after_events(event_loop);
     }
@@ -670,6 +789,16 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
+impl App {
+    fn quit_all(&mut self) {
+        #[cfg(windows)]
+        if self.child_alive() {
+            instance::signal(instance::OVERLAY_QUIT);
+        }
+        self.quit = true;
+    }
+}
+
 // ---------- single instance ----------
 
 #[cfg(windows)]
@@ -679,7 +808,40 @@ mod instance {
     use windows::Win32::System::Threading::{CreateEventW, CreateMutexW, OpenEventW, SetEvent, WaitForMultipleObjects, EVENT_MODIFY_STATE, INFINITE};
     use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
 
-    const EVENTS: [PCWSTR; 3] = [w!("Local\\WallpaperSwitcher.Toggle"), w!("Local\\WallpaperSwitcher.Settings"), w!("Local\\WallpaperSwitcher.Open")];
+    /// Events the tray process listens to: toggle, settings, open, reload settings, quit.
+    pub const TRAY: [PCWSTR; 5] = [
+        w!("Local\\WallpaperSwitcher.Toggle"),
+        w!("Local\\WallpaperSwitcher.Settings"),
+        w!("Local\\WallpaperSwitcher.Open"),
+        w!("Local\\WallpaperSwitcher.Reload"),
+        w!("Local\\WallpaperSwitcher.Quit"),
+    ];
+    /// Events the overlay process listens to: toggle, settings, open, quit.
+    pub const OVERLAY: [PCWSTR; 4] = [
+        w!("Local\\WallpaperSwitcher.Overlay.Toggle"),
+        w!("Local\\WallpaperSwitcher.Overlay.Settings"),
+        w!("Local\\WallpaperSwitcher.Overlay.Open"),
+        w!("Local\\WallpaperSwitcher.Overlay.Quit"),
+    ];
+    pub const TRAY_RELOAD: PCWSTR = TRAY[3];
+    pub const TRAY_QUIT: PCWSTR = TRAY[4];
+    pub const OVERLAY_TOGGLE: PCWSTR = OVERLAY[0];
+    pub const OVERLAY_SETTINGS: PCWSTR = OVERLAY[1];
+    pub const OVERLAY_OPEN: PCWSTR = OVERLAY[2];
+    pub const OVERLAY_QUIT: PCWSTR = OVERLAY[3];
+
+    pub fn signal(name: PCWSTR) -> bool {
+        unsafe {
+            match OpenEventW(EVENT_MODIFY_STATE, false, name) {
+                Ok(ev) => {
+                    let ok = SetEvent(ev).is_ok();
+                    let _ = windows::Win32::Foundation::CloseHandle(ev);
+                    ok
+                }
+                Err(_) => false,
+            }
+        }
+    }
 
     /// Returns false if another instance is running (after forwarding `kind` to it).
     pub fn claim(kind: Option<u8>) -> bool {
@@ -688,9 +850,7 @@ mod instance {
             if GetLastError() == ERROR_ALREADY_EXISTS {
                 if let Some(k) = kind {
                     let _ = AllowSetForegroundWindow(ASFW_ANY);
-                    if let Ok(ev) = OpenEventW(EVENT_MODIFY_STATE, false, EVENTS[k as usize]) {
-                        let _ = SetEvent(ev);
-                    }
+                    signal(TRAY[k as usize]);
                 }
                 return false;
             }
@@ -699,8 +859,8 @@ mod instance {
         }
     }
 
-    pub fn listen(on: impl Fn(u8) + Send + 'static) {
-        let handles: Vec<isize> = EVENTS
+    pub fn listen(names: &'static [PCWSTR], on: impl Fn(u8) + Send + 'static) {
+        let handles: Vec<isize> = names
             .iter()
             .filter_map(|name| unsafe { CreateEventW(None, false, false, *name).ok() })
             .map(|h| h.0 as isize)
@@ -722,6 +882,11 @@ mod instance {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let overlay_view = args.iter().position(|a| a == "--overlay").map(|i| match args.get(i + 1).map(|s| s.as_str()) {
+        Some("settings") => View::Settings,
+        _ => View::Picker,
+    });
+    let role = if overlay_view.is_some() { Role::Overlay } else { Role::Tray };
     let quiet = args.iter().any(|a| a == "--autostart" || a == "--hidden");
     let kind = if args.iter().any(|a| a == "--toggle") {
         Some(0)
@@ -733,7 +898,7 @@ fn main() {
         Some(2)
     };
     #[cfg(windows)]
-    if !instance::claim(kind) {
+    if role == Role::Tray && !instance::claim(kind) {
         return;
     }
 
@@ -742,7 +907,8 @@ fn main() {
     #[cfg(windows)]
     {
         let p = proxy.clone();
-        instance::listen(move |k| {
+        let names: &'static [windows::core::PCWSTR] = if role == Role::Tray { &instance::TRAY } else { &instance::OVERLAY };
+        instance::listen(names, move |k| {
             let _ = p.send_event(UserEvent::Instance(k));
         });
     }
@@ -794,6 +960,9 @@ fn main() {
         quit: false,
         started_quietly: quiet,
         initialized: false,
+        role,
+        initial_view: overlay_view.unwrap_or(View::Picker),
+        child: None,
     };
     let _ = event_loop.run_app(&mut app);
 }
