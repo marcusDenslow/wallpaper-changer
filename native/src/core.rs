@@ -39,6 +39,8 @@ pub struct Core {
     pub editing_lock: bool,
     pub shortcut_error: Option<String>,
     pub cache: PathBuf,
+    /// Folder scan started at process launch, while the GPU initialises.
+    pub preloaded: Option<std::thread::JoinHandle<Vec<library::Wallpaper>>>,
 }
 
 pub fn center(rect: [i32; 4]) -> (i32, i32) {
@@ -72,6 +74,7 @@ impl Core {
             editing_lock: false,
             shortcut_error: None,
             cache: settings::cache_dir().unwrap_or_else(std::env::temp_dir),
+            preloaded: None,
         }
     }
 
@@ -116,8 +119,31 @@ impl Core {
         }
     }
 
-    pub fn list_wallpapers(&self) -> Vec<library::Wallpaper> {
+    pub fn list_wallpapers(&mut self) -> Vec<library::Wallpaper> {
+        if let Some(job) = self.preloaded.take() {
+            if let Ok(items) = job.join() {
+                return items;
+            }
+        }
         self.folder().map(|f| library::scan(&f)).unwrap_or_default()
+    }
+
+    /// Starts scanning the folder and decoding the current wallpapers' thumbnails right away.
+    pub fn preload(&mut self, thumbs: crate::thumbs::ThumbHandle) {
+        let folder = self.folder();
+        let last = self.settings.last_wallpaper.clone();
+        self.preloaded = Some(std::thread::spawn(move || {
+            let current: Vec<String> = sorted_screens()
+                .into_iter()
+                .filter_map(|s| s.wallpaper)
+                .chain(last)
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            for p in current.iter().rev() {
+                thumbs.want_first(p);
+            }
+            folder.map(|f| library::scan(&f)).unwrap_or_default()
+        }));
     }
 
     pub fn warm_thumbnails(&self) {

@@ -28,6 +28,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
+static FRAMES: AtomicU64 = AtomicU64::new(0);
+
 pub const APP_ID: &str = "com.wallpaperswitcher.app";
 
 /// Debug log, only when WALLSWITCH_LOG is set.
@@ -37,7 +39,8 @@ pub fn log(msg: impl AsRef<str>) {
         return;
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(std::env::temp_dir().join("wallswitch-debug.log")) {
-        let _ = writeln!(f, "{}", msg.as_ref());
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() % 100_000).unwrap_or(0);
+        let _ = writeln!(f, "{t:>6} [{}] {}", std::process::id(), msg.as_ref());
     }
 }
 
@@ -97,7 +100,17 @@ struct App {
     role: Role,
     initial_view: View,
     child: Option<std::process::Child>,
+    gpu_boot: Option<std::thread::JoinHandle<Result<gfx::GpuCore, String>>>,
+    /// Window already shown (invisible) while the GPU finishes booting.
+    waiting: Option<(Arc<winit::window::Window>, [i32; 4], View)>,
+    /// Overlay process: the closed window, hidden but kept (with its swapchain and
+    /// thumbnails) until `idle_until`, so reopening is instant.
+    parked: Option<Overlay>,
+    idle_until: Option<Instant>,
 }
+
+/// How long the overlay process stays warm after closing (then exits and frees everything).
+const WARM_FOR: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// What the UI can ask of the app during a frame.
 struct HostCtx<'a> {
@@ -443,16 +456,67 @@ impl App {
             .or_else(|| event_loop.primary_monitor())
             .or_else(|| monitors.first().cloned());
         let rect = monitor.as_ref().map(monitor_rect).unwrap_or([0, 0, 1920, 1080]);
-        let rect = if std::env::var_os("WALLSWITCH_SMALL").is_some() { [200, 150, 1800, 1100] } else { rect };
         log(format!("show_overlay {view:?} rect={rect:?}"));
-        let win = match gfx::GpuWindow::new(event_loop, rect) {
+        if let Some(w) = &mut self.waiting {
+            w.2 = view;
+            return;
+        }
+        self.idle_until = None;
+        if let Some(mut o) = self.parked.take() {
+            let size = o.win.window.inner_size();
+            let current = o.win.window.outer_position().map(|p| [p.x, p.y, p.x + size.width as i32, p.y + size.height as i32]).ok();
+            if current != Some(rect) {
+                o.win.window.set_outer_position(winit::dpi::PhysicalPosition::new(rect[0], rect[1]));
+                let _ = o.win.window.request_inner_size(winit::dpi::PhysicalSize::new((rect[2] - rect[0]) as u32, (rect[3] - rect[1]) as u32));
+            }
+            o.win.window.set_visible(true);
+            o.win.window.focus_window();
+            o.shown = false;
+            self.core.overlay_rect = Some(rect);
+            self.core.target_rect = Some(rect);
+            self.core.editing_lock = false;
+            self.overlay = Some(o);
+            self.ui.reduce = reduce_motion();
+            let now = self.now();
+            self.with_host(|ui, host| ui.open(view, host, now));
+            self.redraw();
+            return;
+        }
+        let window = match gfx::GpuWindow::create_window(event_loop, rect) {
             Ok(w) => w,
             Err(e) => {
                 log(&e);
                 return;
             }
         };
+        // invisible until the first frame is presented; showing it now overlaps the
+        // ~100 ms Windows needs to show a window with the GPU setup
+        window.set_visible(true);
+        window.focus_window();
+        self.waiting = Some((window, rect, view));
+        self.finish_overlay(event_loop);
+    }
+
+    /// Attaches the GPU once it's ready. Called again on wake-ups until it is.
+    fn finish_overlay(&mut self, event_loop: &ActiveEventLoop) {
+        if self.waiting.is_none() || self.gpu_boot.as_ref().is_some_and(|j| !j.is_finished()) {
+            return;
+        }
+        let Some((window, rect, view)) = self.waiting.take() else { return };
+        let gpu = match self.gpu_boot.take() {
+            Some(job) => job.join().unwrap_or_else(|_| Err("graphics thread panicked".into())),
+            None => gfx::GpuCore::create(),
+        };
+        let win = match gpu.and_then(|core| gfx::GpuWindow::new(event_loop, window, core)) {
+            Ok(w) => w,
+            Err(e) => {
+                log(&e);
+                return;
+            }
+        };
+        log("gfx ready");
         ui::style::install_fonts(&win.ctx);
+        log("fonts");
         win.ctx.options_mut(|o| {
             o.zoom_with_keyboard = false;
         });
@@ -474,6 +538,7 @@ impl App {
         };
         self.ui.set_viewport(w, h);
         self.with_host(|ui, host| ui.open(view, host, now));
+        log("ui.open (library scanned)");
         // hidden windows get no redraw events: paint the first frame ourselves, then show it
         self.redraw();
     }
@@ -518,6 +583,7 @@ impl App {
             return;
         }
         let Ok(exe) = std::env::current_exe() else { return };
+        log("spawning overlay");
         match std::process::Command::new(exe).arg("--overlay").arg(view_arg(view)).spawn() {
             Ok(child) => {
                 let pid = child.id();
@@ -567,11 +633,15 @@ impl App {
     fn destroy_overlay(&mut self) {
         if let Some(o) = self.overlay.take() {
             o.win.window.set_visible(false);
-            self.thumbs.release();
             if let Some((_, tex)) = self.ui.full_image.take() {
                 tex.destroy();
             }
-            drop(o);
+            if self.role == Role::Overlay && !self.quit {
+                // the process exits after WARM_FOR, which frees all of this
+                self.parked = Some(o);
+            } else {
+                self.thumbs.release();
+            }
         }
         self.glow_turn.fetch_add(1, SeqCst);
         trim_memory();
@@ -590,6 +660,7 @@ impl App {
         let window_arc = o.win.window.clone();
         let window = &*window_arc;
         let hwnd = o.win.hwnd();
+        let t0 = Instant::now();
         let mut animating = false;
         {
             let mut host = HostCtx {
@@ -618,6 +689,9 @@ impl App {
                 }
             });
         }
+        if FRAMES.fetch_add(1, SeqCst) < 12 {
+            log(format!("frame {} took {:?}", FRAMES.load(SeqCst), t0.elapsed()));
+        }
         if !o.shown {
             log(format!("first paint, scale={}", window.scale_factor()));
             #[cfg(windows)]
@@ -628,7 +702,6 @@ impl App {
             }
             o.shown = true;
             o.shown_at = Instant::now();
-            window.set_visible(true);
             window.focus_window();
         }
         if animating {
@@ -647,7 +720,7 @@ impl App {
             if let Some(v) = self.pending_open.take() {
                 self.show_overlay(event_loop, v);
             } else if self.role == Role::Overlay {
-                event_loop.exit();
+                self.idle_until = Some(Instant::now() + WARM_FOR);
             }
         }
     }
@@ -663,7 +736,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.role == Role::Overlay {
             let view = self.initial_view;
             self.show_overlay(event_loop, view);
-            if self.overlay.is_none() {
+            if self.overlay.is_none() && self.waiting.is_none() {
                 event_loop.exit();
             }
             return;
@@ -695,6 +768,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Wake => {
+                self.finish_overlay(event_loop);
                 while let Ok(msg) = self.msgs_rx.try_recv() {
                     if !self.visible() {
                         continue;
@@ -727,6 +801,9 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if FRAMES.load(SeqCst) < 4 {
+            log(format!("event {:?}", std::mem::discriminant(&event)).replace("Discriminant", "") + &format!(" {}", match &event { WindowEvent::RedrawRequested => "redraw", WindowEvent::Focused(_) => "focus", WindowEvent::Resized(_) => "resize", WindowEvent::Moved(_) => "moved", _ => "other" }));
+        }
         let Some(o) = self.overlay.as_mut() else { return };
         match &event {
             WindowEvent::RedrawRequested => {
@@ -766,6 +843,13 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop.set_control_flow(ControlFlow::wait_duration(std::time::Duration::from_millis(100)));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
+        }
+        if let (Some(t), None) = (self.idle_until, &self.overlay) {
+            if Instant::now() >= t {
+                event_loop.exit();
+                return;
+            }
+            event_loop.set_control_flow(ControlFlow::WaitUntil(t));
         }
         if let Some(next) = self.ui.next_due() {
             if self.visible() {
@@ -904,6 +988,13 @@ fn main() {
 
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("Wallpaper Switcher failed to start");
     let proxy = event_loop.create_proxy();
+    // overlay process: start the slow GPU setup immediately, in parallel with everything else
+    let gpu_boot = (role == Role::Overlay).then(|| {
+        let p = proxy.clone();
+        gfx::GpuCore::start(move || {
+            let _ = p.send_event(UserEvent::Wake);
+        })
+    });
     #[cfg(windows)]
     {
         let p = proxy.clone();
@@ -931,7 +1022,7 @@ fn main() {
         }));
     }
 
-    let core = Core::new();
+    let mut core = Core::new();
     let wake = {
         let p = proxy.clone();
         move || {
@@ -939,6 +1030,9 @@ fn main() {
         }
     };
     let thumbs = thumbs::Thumbs::new(core.cache.clone(), wake);
+    if role == Role::Overlay {
+        core.preload(thumbs.handle());
+    }
     let (tx, rx) = mpsc::channel();
     let mut app = App {
         proxy,
@@ -963,6 +1057,10 @@ fn main() {
         role,
         initial_view: overlay_view.unwrap_or(View::Picker),
         child: None,
+        gpu_boot,
+        waiting: None,
+        parked: None,
+        idle_until: None,
     };
     let _ = event_loop.run_app(&mut app);
 }

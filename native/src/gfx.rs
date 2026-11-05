@@ -9,6 +9,65 @@ use winit::event_loop::ActiveEventLoop;
 use winit::raw_window_handle::HasWindowHandle as _;
 use winit::window::{Window, WindowAttributes, WindowLevel};
 
+/// Device, queue and compiled pipelines. Slow to make (~300 ms), so it's started on a
+/// thread the moment the overlay process launches, in parallel with everything else.
+pub struct GpuCore {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    renderer: egui_wgpu::Renderer,
+    fx: Arc<Fx>,
+    format: wgpu::TextureFormat,
+}
+
+fn renderer_options() -> egui_wgpu::RendererOptions {
+    egui_wgpu::RendererOptions { msaa_samples: 1, depth_stencil_format: None, dithering: true, predictable_texture_filtering: false }
+}
+
+impl GpuCore {
+    pub fn create() -> Result<Self, String> {
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        desc.backends = wgpu::Backends::DX12;
+        desc.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+        let instance = wgpu::Instance::new(desc);
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        }))
+        .map_err(|e| format!("No graphics adapter: {e}"))?;
+        crate::log("gfx: adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("wallswitch"),
+            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            ..Default::default()
+        }))
+        .map_err(|e| format!("No graphics device: {e}"))?;
+        crate::log("gfx: device");
+        // DXGI composition swapchains always accept BGRA8; the two shader compiles run in parallel.
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        let (renderer, fx) = std::thread::scope(|s| {
+            let fx = s.spawn(|| Arc::new(Fx::new(&device, &queue, format)));
+            let renderer = egui_wgpu::Renderer::new(&device, format, renderer_options());
+            (renderer, fx.join().expect("fx pipeline"))
+        });
+        crate::log("gfx: pipelines");
+        Ok(Self { instance, adapter, device, queue, renderer, fx, format })
+    }
+
+    /// Starts on a thread; `done` is called when it finishes (to wake the event loop).
+    pub fn start(done: impl FnOnce() + Send + 'static) -> std::thread::JoinHandle<Result<Self, String>> {
+        std::thread::spawn(move || {
+            let r = Self::create();
+            done();
+            r
+        })
+    }
+}
+
 pub struct GpuWindow {
     pub window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -22,7 +81,9 @@ pub struct GpuWindow {
 }
 
 impl GpuWindow {
-    pub fn new(event_loop: &ActiveEventLoop, rect: [i32; 4]) -> Result<Self, String> {
+    /// The bare window. With no redirection bitmap and no swapchain yet it is fully invisible,
+    /// so it can be shown right away while the GPU is still initialising.
+    pub fn create_window(event_loop: &ActiveEventLoop, rect: [i32; 4]) -> Result<Arc<Window>, String> {
         #[cfg(windows)]
         use winit::platform::windows::WindowAttributesExtWindows as _;
         let size = PhysicalSize::new((rect[2] - rect[0]).max(1) as u32, (rect[3] - rect[1]).max(1) as u32);
@@ -44,32 +105,22 @@ impl GpuWindow {
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| format!("Couldn't create the window: {e}"))?);
         #[cfg(windows)]
         plain_popup(&window);
+        Ok(window)
+    }
 
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = wgpu::Backends::DX12;
-        desc.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
-        let instance = wgpu::Instance::new(desc);
+    pub fn new(event_loop: &ActiveEventLoop, window: Arc<Window>, core: GpuCore) -> Result<Self, String> {
+        let size = window.inner_size();
+
+        let GpuCore { instance, adapter, device, queue, mut renderer, mut fx, format: boot_format } = core;
         let surface = instance.create_surface(window.clone()).map_err(|e| format!("Couldn't create a surface: {e}"))?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        }))
-        .map_err(|e| format!("No graphics adapter: {e}"))?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("wallswitch"),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
-            ..Default::default()
-        }))
-        .map_err(|e| format!("No graphics device: {e}"))?;
         let caps = surface.get_capabilities(&adapter);
-        crate::log(format!("adapter {:?} backend {:?} formats {:?} alpha {:?}", adapter.get_info().name, adapter.get_info().backend, caps.formats, caps.alpha_modes));
-        let format = [wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureFormat::Rgba8Unorm]
-            .into_iter()
-            .find(|f| caps.formats.contains(f))
-            .unwrap_or(caps.formats[0]);
+        crate::log(format!("adapter {:?} formats {:?} alpha {:?}", adapter.get_info().name, caps.formats, caps.alpha_modes));
+        let format = if caps.formats.contains(&boot_format) { boot_format } else { caps.formats[0] };
+        if format != boot_format {
+            // rare: rebuild the pipelines for the surface's format
+            renderer = egui_wgpu::Renderer::new(&device, format, renderer_options());
+            fx = Arc::new(Fx::new(&device, &queue, format));
+        }
         let alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
             wgpu::CompositeAlphaMode::PreMultiplied
         } else {
@@ -88,12 +139,7 @@ impl GpuWindow {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
-        let renderer = egui_wgpu::Renderer::new(
-            &device,
-            format,
-            egui_wgpu::RendererOptions { msaa_samples: 1, depth_stencil_format: None, dithering: true, predictable_texture_filtering: false },
-        );
-        let fx = Arc::new(Fx::new(&device, &queue, format));
+        crate::log("gfx: configured");
         let ctx = egui::Context::default();
         let state = egui_winit::State::new(
             ctx.clone(),
@@ -107,7 +153,9 @@ impl GpuWindow {
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
-        if size.width > 0 && size.height > 0 {
+        // Windows sends several same-size WM_SIZEs on show; rebuilding the swapchain costs ~30 ms each
+        let same = size.width == self.config.width && size.height == self.config.height;
+        if size.width > 0 && size.height > 0 && !same {
             self.config.width = size.width;
             self.config.height = size.height;
             self.surface.configure(&self.device, &self.config);
@@ -214,6 +262,9 @@ fn plain_popup(window: &Window) {
         let _ = DwmExtendFrameIntoClientArea(hwnd, &MARGINS::default());
         let auto: u32 = 0; // DWMSBT_AUTO: no backdrop on a window without a title bar
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &auto as *const _ as _, 4);
+        // no system open/close animation: the overlay animates itself, like the web version did
+        let on: i32 = 1;
+        let _ = DwmSetWindowAttribute(hwnd, windows::Win32::Graphics::Dwm::DWMWA_TRANSITIONS_FORCEDISABLED, &on as *const _ as _, 4);
         let bb = DWM_BLURBEHIND { dwFlags: DWM_BB_ENABLE, fEnable: false.into(), ..Default::default() };
         let _ = DwmEnableBlurBehindWindow(hwnd, &bb);
         disable_accent(hwnd);

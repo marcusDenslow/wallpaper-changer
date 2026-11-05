@@ -88,6 +88,9 @@ impl Thumbs {
             return;
         }
         let mut guard = self.queue.items.lock().unwrap();
+        if !self.queued.contains(&k) && guard.0.iter().any(|p| key(p) == k) {
+            self.queued.insert(k.clone()); // pushed early through a ThumbHandle
+        }
         if self.queued.contains(&k) {
             if urgent {
                 if let Some(i) = guard.0.iter().position(|p| key(p) == k) {
@@ -106,6 +109,12 @@ impl Thumbs {
             guard.0.push_back(path.to_string());
         }
         self.queue.ready.notify_one();
+    }
+
+    /// A Send handle that can queue thumbnails from other threads (used to start
+    /// decoding the current wallpaper while the GPU is still initialising).
+    pub fn handle(&self) -> ThumbHandle {
+        ThumbHandle(self.queue.clone())
     }
 
     pub fn has(&self, path: &str) -> bool {
@@ -198,6 +207,19 @@ impl Thumbs {
         guard.0.clear();
         self.queued.clear();
         while self.rx.try_recv().is_ok() {}
+    }
+}
+
+#[derive(Clone)]
+pub struct ThumbHandle(Arc<Queue>);
+
+impl ThumbHandle {
+    pub fn want_first(&self, path: &str) {
+        let mut guard = self.0.items.lock().unwrap();
+        if !guard.0.iter().any(|p| key(p) == key(path)) {
+            guard.0.push_front(path.to_string());
+            self.0.ready.notify_one();
+        }
     }
 }
 
