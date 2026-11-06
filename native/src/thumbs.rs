@@ -22,8 +22,7 @@ struct Queue {
 }
 
 pub enum State {
-    Pending,
-    Ready { tex: Tex, color: String, born: f64 },
+    Ready { tex: Tex, born: f64 },
     Error,
 }
 
@@ -138,9 +137,6 @@ impl Thumbs {
         matches!(self.states.get(&key(path)), Some(State::Error))
     }
 
-    pub fn color(&self, path: &str) -> Option<&str> {
-        self.colors.get(&key(path)).map(|s| s.as_str())
-    }
 
     /// Upload finished decodes. Returns the paths that just became available.
     pub fn pump(&mut self, fx: &Fx, now: f64) -> Vec<String> {
@@ -152,7 +148,7 @@ impl Thumbs {
                 Ok((levels, color)) => {
                     self.colors.insert(k.clone(), color.clone());
                     match fx.upload(&levels) {
-                        Some(tex) => State::Ready { tex, color, born: now },
+                        Some(tex) => State::Ready { tex, born: now },
                         None => State::Error,
                     }
                 }

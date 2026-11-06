@@ -299,10 +299,6 @@ pub fn ring(painter: &Painter, fx: &Arc<Fx>, screen: Rect, rect: Rect, radius: f
     painter.add(render::shape(fx, screen, Draw::Ring { rect, radius, width, color }, Mask::default()));
 }
 
-pub fn rounded(painter: &Painter, rect: Rect, radius: f32, fill: Color32) {
-    painter.rect_filled(rect, radius, fill);
-}
-
 pub fn bordered(painter: &Painter, rect: Rect, radius: f32, fill: Color32, border: Color32) {
     painter.rect(rect, radius, fill, Stroke::new(1.0, border), egui::StrokeKind::Inside);
 }

@@ -118,7 +118,6 @@ pub struct PanelState {
     order: Vec<Ctl>,
     settings: Settings,
     multi: bool,
-    map_on: bool,
     tab_rects: [Rect; 3],
 }
 
@@ -152,7 +151,6 @@ impl Default for PanelState {
             order: Vec::new(),
             settings: Settings::default(),
             multi: false,
-            map_on: false,
             tab_rects: [Rect::NOTHING; 3],
         }
     }

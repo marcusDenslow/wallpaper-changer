@@ -2,7 +2,7 @@
 
 use crate::settings::{self, Settings};
 use crate::{autostart, library, wallpaper};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, Default)]
 pub struct ScreenInfo {
@@ -63,7 +63,10 @@ impl Core {
         let first_run = !settings::exists();
         let mut loaded = settings::load();
         loaded.autostart = autostart::is_enabled();
-        if loaded.autostart {
+        // keeps the Run entry pointing at this exe after it moves; dev builds (cargo's target
+        // folder) must not hijack the installed app's entry
+        let dev_build = std::env::current_exe().is_ok_and(|p| p.components().any(|c| c.as_os_str() == "target"));
+        if loaded.autostart && !dev_build {
             let _ = autostart::enable();
         }
         Self {
@@ -301,8 +304,4 @@ pub fn readable_shortcut(accel: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("+")
-}
-
-pub fn is_image(p: &str) -> bool {
-    library::is_image(Path::new(p))
 }

@@ -420,9 +420,9 @@ pub struct Ui {
     pub grid_origin: Pos2,
     pub grid_view_h: f32,
     pub first_frame: bool,
-    pub ui_attr_hidden: bool,
     pub pk: picker::Extra,
     pub panel_select_rect: Rect,
+    last_mouse: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -603,9 +603,9 @@ impl Ui {
             grid_origin: Pos2::ZERO,
             grid_view_h: 0.0,
             first_frame: true,
-            ui_attr_hidden: false,
             pk: picker::Extra::default(),
             panel_select_rect: Rect::NOTHING,
+            last_mouse: false,
         }
     }
 
@@ -1755,7 +1755,7 @@ impl Ui {
         self.picker_o.set(0.0, self.now, t(260.0, anim::OUT));
         self.panel.welcome_items = self.items.len();
         self.panel.focus = Some(panel::Ctl::WelcomeDone);
-        self.panel.focus_visible = false;
+        self.panel.focus_visible = !self.last_mouse;
         self.render_hints();
     }
 
@@ -2142,6 +2142,7 @@ impl Ui {
         self.picker_o.set(0.0, now, t(260.0, anim::OUT));
         self.welcome_o.set(0.0, now, t(300.0, anim::OUT));
         self.panel.show(from_picker, self.snapshot.shortcut_error.clone(), &self.settings, self.multi_screen(), now);
+        self.panel.focus_visible = !self.last_mouse;
         self.render_hints();
     }
 
@@ -2469,6 +2470,7 @@ impl Ui {
     }
 
     fn on_key(&mut self, key: Key, m: Modifiers, host: &mut dyn Host) {
+        self.last_mouse = false;
         if self.panel.recording {
             if let Some(accel) = panel::record_key(key, m) {
                 match accel {
@@ -2724,6 +2726,9 @@ impl Ui {
     fn on_pointer(&mut self, pos: Pos2, pressed: bool, m: Modifiers, host: &mut dyn Host) {
         let hit = self.hit_at(pos);
         if pressed {
+            // :focus-visible only follows keyboard interaction
+            self.last_mouse = true;
+            self.panel.focus_visible = false;
             self.press = hit.clone().map(|h| (h, pos));
             self.on_mousedown(hit.as_ref(), host);
             return;

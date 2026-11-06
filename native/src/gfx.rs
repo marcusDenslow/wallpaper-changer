@@ -38,7 +38,6 @@ impl GpuCore {
             apply_limit_buckets: false,
         }))
         .map_err(|e| format!("No graphics adapter: {e}"))?;
-        crate::log("gfx: adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("wallswitch"),
             required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
@@ -46,7 +45,6 @@ impl GpuCore {
             ..Default::default()
         }))
         .map_err(|e| format!("No graphics device: {e}"))?;
-        crate::log("gfx: device");
         // DXGI composition swapchains always accept BGRA8; the two shader compiles run in parallel.
         let format = wgpu::TextureFormat::Bgra8Unorm;
         let (renderer, fx) = std::thread::scope(|s| {
@@ -54,7 +52,6 @@ impl GpuCore {
             let renderer = egui_wgpu::Renderer::new(&device, format, renderer_options());
             (renderer, fx.join().expect("fx pipeline"))
         });
-        crate::log("gfx: pipelines");
         Ok(Self { instance, adapter, device, queue, renderer, fx, format })
     }
 
@@ -139,7 +136,6 @@ impl GpuWindow {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
-        crate::log("gfx: configured");
         let ctx = egui::Context::default();
         let state = egui_winit::State::new(
             ctx.clone(),

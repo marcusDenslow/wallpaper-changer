@@ -68,18 +68,19 @@ Uninstalling removes all three.
 
 ## Build it yourself
 
-On Windows, install [Rust](https://rustup.rs), [Node.js](https://nodejs.org) and [NSIS](https://nsis.sourceforge.io), then:
+On Windows, install [Rust](https://rustup.rs) and [NSIS](https://nsis.sourceforge.io), then:
 
 ```sh
-npm install
-npm run tauri build
+cd native
+cargo build --release
+cd ..
 makensis installer\wallpaper-switcher.nsi
 ```
 
 The installer is written to the `installer` folder.
 
-- `src` is the overlay itself (HTML, CSS and JS, with the two fonts it uses)
-- `src-tauri/src` is the Rust side: window, tray, shortcut, thumbnails, setting the wallpaper and lock screen, the screen flash and start-up entry
+- `native/src` is the whole app, in Rust: a tiny tray process (shortcut, tray icon) that starts the overlay process on demand. The overlay draws with egui on Direct3D 12 through a DirectComposition swapchain, stays warm for two minutes after closing, then exits and frees all of its memory
+- `native/src/ui` is the overlay itself: row, folder stacks, grid, caption, hints, screen map, settings and welcome
 - `installer` has the NSIS script and its artwork
 
-The fonts, Bodoni Moda and Schibsted Grotesk, are under the SIL Open Font License. Their license files are in `src/fonts`.
+The fonts, Bodoni Moda and Schibsted Grotesk, are under the SIL Open Font License. Their license files are in `native/assets`.

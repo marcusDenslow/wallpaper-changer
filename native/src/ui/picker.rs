@@ -17,7 +17,6 @@ pub struct Extra {
     pub hints_vis: Option<Tween>,
     pub map_fx: Vec<(Tween, Tween)>,
     pub map_img: Vec<Option<f64>>,
-    pub grid_hover: Option<usize>,
     pub caption_rect: Rect,
     pub map_h: f32,
 }
@@ -31,7 +30,6 @@ impl Default for Extra {
             hints_vis: None,
             map_fx: Vec::new(),
             map_img: Vec::new(),
-            grid_hover: None,
             caption_rect: Rect::NOTHING,
             map_h: 0.0,
         }
@@ -102,7 +100,7 @@ pub fn draw_top(ui: &mut Ui, p: &Painter, fx: &Arc<Fx>, thumbs: &mut Thumbs, scr
 
 fn draw_backdrop(ui: &Ui, p: &Painter, fx: &Arc<Fx>, screen: Rect, now: f64) {
     let o = ui.backdrop.get(now);
-    if o <= 0.001 || std::env::var_os("WALLSWITCH_NOBACKDROP").is_some() {
+    if o <= 0.001 {
         return;
     }
     let (vw, vh) = (screen.width(), screen.height());

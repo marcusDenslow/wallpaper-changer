@@ -28,8 +28,6 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
-static FRAMES: AtomicU64 = AtomicU64::new(0);
-
 pub const APP_ID: &str = "com.wallpaperswitcher.app";
 
 /// Debug log, only when WALLSWITCH_LOG is set.
@@ -514,9 +512,7 @@ impl App {
                 return;
             }
         };
-        log("gfx ready");
         ui::style::install_fonts(&win.ctx);
-        log("fonts");
         win.ctx.options_mut(|o| {
             o.zoom_with_keyboard = false;
         });
@@ -538,7 +534,6 @@ impl App {
         };
         self.ui.set_viewport(w, h);
         self.with_host(|ui, host| ui.open(view, host, now));
-        log("ui.open (library scanned)");
         // hidden windows get no redraw events: paint the first frame ourselves, then show it
         self.redraw();
     }
@@ -682,24 +677,12 @@ impl App {
             };
             let ui_state = &mut self.ui;
             let thumbs = &mut self.thumbs;
-            let blank = std::env::var_os("WALLSWITCH_BLANK").is_some();
             o.win.paint(|ui| {
-                if !blank {
-                    animating = ui_state.frame(ui, &fx, thumbs, &mut host, now);
-                }
+                animating = ui_state.frame(ui, &fx, thumbs, &mut host, now);
             });
         }
-        if FRAMES.fetch_add(1, SeqCst) < 12 {
-            log(format!("frame {} took {:?}", FRAMES.load(SeqCst), t0.elapsed()));
-        }
         if !o.shown {
-            log(format!("first paint, scale={}", window.scale_factor()));
-            #[cfg(windows)]
-            unsafe {
-                use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, GWL_EXSTYLE, GWL_STYLE};
-                let h = windows::Win32::Foundation::HWND(hwnd as _);
-                log(format!("style {:08x} ex {:08x}", GetWindowLongPtrW(h, GWL_STYLE), GetWindowLongPtrW(h, GWL_EXSTYLE)));
-            }
+            log(format!("first paint after {:?}", t0.elapsed()));
             o.shown = true;
             o.shown_at = Instant::now();
             window.focus_window();
@@ -801,9 +784,6 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if FRAMES.load(SeqCst) < 4 {
-            log(format!("event {:?}", std::mem::discriminant(&event)).replace("Discriminant", "") + &format!(" {}", match &event { WindowEvent::RedrawRequested => "redraw", WindowEvent::Focused(_) => "focus", WindowEvent::Resized(_) => "resize", WindowEvent::Moved(_) => "moved", _ => "other" }));
-        }
         let Some(o) = self.overlay.as_mut() else { return };
         match &event {
             WindowEvent::RedrawRequested => {

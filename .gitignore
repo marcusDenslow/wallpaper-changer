@@ -1,5 +1,2 @@
-node_modules/
-src-tauri/target/
-src-tauri/gen/
-installer/*.exe
 native/target/
+installer/*.exe
