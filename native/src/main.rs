@@ -100,12 +100,16 @@ struct App {
     child: Option<std::process::Child>,
     gpu_boot: Option<std::thread::JoinHandle<Result<gfx::GpuCore, String>>>,
     /// Window already shown (invisible) while the GPU finishes booting.
-    waiting: Option<(Arc<winit::window::Window>, [i32; 4], View)>,
+    waiting: Option<(Arc<winit::window::Window>, [i32; 4], View, Instant)>,
+    gpu_ready: Arc<AtomicBool>,
     /// Overlay process: the closed window, hidden but kept (with its swapchain and
     /// thumbnails) until `idle_until`, so reopening is instant.
     parked: Option<Overlay>,
     idle_until: Option<Instant>,
 }
+
+/// The invisible early window gives up if the GPU isn't ready by then.
+const BOOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// How long the overlay process stays warm after closing (then exits and frees everything).
 const WARM_FOR: std::time::Duration = std::time::Duration::from_secs(120);
@@ -488,27 +492,33 @@ impl App {
             }
         };
         // invisible until the first frame is presented; showing it now overlaps the
-        // ~100 ms Windows needs to show a window with the GPU setup
+        // ~100 ms Windows needs to show a window with the GPU setup. Clicks pass through
+        // until it can draw, so it can never block the desktop.
+        let _ = window.set_cursor_hittest(false);
         window.set_visible(true);
         window.focus_window();
-        self.waiting = Some((window, rect, view));
+        self.waiting = Some((window, rect, view, Instant::now()));
         self.finish_overlay(event_loop);
     }
 
     /// Attaches the GPU once it's ready. Called again on wake-ups until it is.
     fn finish_overlay(&mut self, event_loop: &ActiveEventLoop) {
-        if self.waiting.is_none() || self.gpu_boot.as_ref().is_some_and(|j| !j.is_finished()) {
+        if self.waiting.is_none() || (self.gpu_boot.is_some() && !self.gpu_ready.load(SeqCst)) {
             return;
         }
-        let Some((window, rect, view)) = self.waiting.take() else { return };
+        let Some((window, rect, view, _)) = self.waiting.take() else { return };
         let gpu = match self.gpu_boot.take() {
             Some(job) => job.join().unwrap_or_else(|_| Err("graphics thread panicked".into())),
             None => gfx::GpuCore::create(),
         };
+        let _ = window.set_cursor_hittest(true);
         let win = match gpu.and_then(|core| gfx::GpuWindow::new(event_loop, window, core)) {
             Ok(w) => w,
             Err(e) => {
+                // no graphics: don't linger with nothing on screen
                 log(&e);
+                self.quit = true;
+                event_loop.exit();
                 return;
             }
         };
@@ -824,6 +834,16 @@ impl ApplicationHandler<UserEvent> for App {
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
+        if let Some((_, _, _, since)) = &self.waiting {
+            if since.elapsed() >= BOOT_TIMEOUT {
+                log("graphics didn't start in time; giving up");
+                self.waiting = None;
+                self.quit = true;
+                event_loop.exit();
+                return;
+            }
+            event_loop.set_control_flow(ControlFlow::WaitUntil(*since + BOOT_TIMEOUT));
+        }
         if let (Some(t), None) = (self.idle_until, &self.overlay) {
             if Instant::now() >= t {
                 event_loop.exit();
@@ -969,9 +989,10 @@ fn main() {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("Wallpaper Switcher failed to start");
     let proxy = event_loop.create_proxy();
     // overlay process: start the slow GPU setup immediately, in parallel with everything else
+    let gpu_ready = Arc::new(AtomicBool::new(false));
     let gpu_boot = (role == Role::Overlay).then(|| {
         let p = proxy.clone();
-        gfx::GpuCore::start(move || {
+        gfx::GpuCore::start(gpu_ready.clone(), move || {
             let _ = p.send_event(UserEvent::Wake);
         })
     });
@@ -1038,6 +1059,7 @@ fn main() {
         initial_view: overlay_view.unwrap_or(View::Picker),
         child: None,
         gpu_boot,
+        gpu_ready,
         waiting: None,
         parked: None,
         idle_until: None,

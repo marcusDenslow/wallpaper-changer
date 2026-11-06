@@ -55,10 +55,16 @@ impl GpuCore {
         Ok(Self { instance, adapter, device, queue, renderer, fx, format })
     }
 
-    /// Starts on a thread; `done` is called when it finishes (to wake the event loop).
-    pub fn start(done: impl FnOnce() + Send + 'static) -> std::thread::JoinHandle<Result<Self, String>> {
+    /// Starts on a thread. `ready` is set *before* `done` (which wakes the event loop) is
+    /// called, so the wake-up always finds the result available — `JoinHandle::is_finished`
+    /// can still be false at that moment, which once left an invisible window up for good.
+    pub fn start(
+        ready: Arc<std::sync::atomic::AtomicBool>,
+        done: impl FnOnce() + Send + 'static,
+    ) -> std::thread::JoinHandle<Result<Self, String>> {
         std::thread::spawn(move || {
             let r = Self::create();
+            ready.store(true, std::sync::atomic::Ordering::SeqCst);
             done();
             r
         })
