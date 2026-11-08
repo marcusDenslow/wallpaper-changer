@@ -214,7 +214,7 @@ fn draw_cards(ui: &mut Ui, p: &Painter, fx: &Arc<Fx>, thumbs: &mut Thumbs, scree
                     }
                 }
                 // count badge: right 14 bottom 12, padding 3 10, 13px 600
-                let g = style::text(&items.len().to_string(), 13.0 * scale, Face::Sans600, style::ink(1.0)).galley(p, None);
+                let g = style::text(&items.len().to_string(), 13.0 * scale, Face::Sans600Tnum, style::ink(1.0)).galley(p, None);
                 let pad = Vec2::new(10.0, 3.0) * scale;
                 let line_h = 13.0 * 1.45 * scale;
                 let size = Vec2::new(g.size().x + pad.x * 2.0, line_h + pad.y * 2.0);
@@ -413,7 +413,7 @@ fn draw_grid(ui: &mut Ui, p: &Painter, fx: &Arc<Fx>, thumbs: &mut Thumbs, screen
             a *= ((h.enter.get(now) + 1.0) / 2.0).clamp(0.0, 1.0);
         }
         let name = style::text(&h.name, 26.0, Face::Serif, style::ink(1.0)).line(26.0 * 1.2).galley(p, None);
-        let count = style::text(&super::plural(h.count, "wallpaper"), 13.0, Face::Sans500, style::ink(0.42)).galley(p, None);
+        let count = style::text(&super::plural(h.count, "wallpaper"), 13.0, Face::Sans500Tnum, style::ink(0.42)).galley(p, None);
         let base_y = r.min.y;
         let sh = style::TextShadow { offset: 0.0, sharp_alpha: 0.0, blur: 18.0, blur_alpha: 0.5, blur_offset: 2.0 };
         style::draw_galley(&clip, fx, screen, Pos2::new(r.min.x, base_y), &name, a, Some(sh));
@@ -553,7 +553,7 @@ fn draw_caption(ui: &mut Ui, p: &Painter, fx: &Arc<Fx>, screen: Rect, now: f64, 
     let mut parts: Vec<(Arc<egui::Galley>, f32, bool)> = Vec::new(); // galley, width, is_chip
     let chip_text = ui.filter.clone();
     if ui.show_filter_chip {
-        let gt = style::text(&chip_text, meta_size, Face::Sans450, style::ink(1.0)).letter(0.01).galley(p, None);
+        let gt = style::text(&chip_text, meta_size, Face::Sans450Tnum, style::ink(1.0)).letter(0.01).galley(p, None);
         let w = 10.0 + 13.0 + 6.0 + gt.size().x + 6.0 + 2.0 + 1.5 + 12.0;
         parts.push((gt, w, true));
     }
@@ -563,7 +563,7 @@ fn draw_caption(ui: &mut Ui, p: &Painter, fx: &Arc<Fx>, screen: Rect, now: f64, 
             MetaKind::Strong => style::ink(1.0),
             MetaKind::Error => style::rgba(style::ERROR, 1.0),
         };
-        let gt = style::text(text, meta_size, Face::Sans450, color).letter(0.01).galley(p, Some(width));
+        let gt = style::text(text, meta_size, Face::Sans450Tnum, color).letter(0.01).galley(p, Some(width));
         let w = gt.size().x;
         parts.push((gt, w, false));
     }

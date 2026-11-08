@@ -1146,7 +1146,10 @@ fn draw_welcome(ui: &mut Ui, p: &Painter, fx: &Arc<Fx>, screen: Rect, now: f64, 
     };
     // measure
     let title_size = clampf(52.0, vw * 0.06, 108.0);
-    let title = style::text("Wallpaper Switcher", title_size, Face::Serif, style::ink(1.0)).letter(-0.016).line(title_size).galley(p, None);
+    // `.welcome-inner` is min(600px, 100%) wide, so at 108px the title wraps onto two lines
+    let title = style::text("Wallpaper Switcher", title_size, Face::Serif, style::ink(1.0)).letter(-0.016).line(title_size);
+    let title_lines = style::wrap_lines(p, title, inner_w);
+    let title_h: f32 = title_lines.iter().map(|g| g.size().y).sum();
     let keys = style::pretty_shortcut(&ui.panel.settings.shortcut);
     let press = style::text("Press", 17.0, Face::Sans400, style::ink(0.66)).galley(p, None);
     let rest = style::text("from anywhere to open it.", 17.0, Face::Sans400, style::ink(0.66)).galley(p, None);
@@ -1198,7 +1201,7 @@ fn draw_welcome(ui: &mut Ui, p: &Painter, fx: &Arc<Fx>, screen: Rect, now: f64, 
     let done_label = if n > 0 { "Show my wallpapers" } else { "Done" };
     let dg = style::text(done_label, 15.0, Face::Sans500, style::ink(1.0)).galley(p, None);
     let done_size = Vec2::new(dg.size().x + 48.0 + 2.0, 15.0 * LINE + 24.0 + 2.0);
-    let total = title.size().y + 22.0 + lead_h + 46.0 + card_h + 30.0 + done_size.y;
+    let total = title_h + 22.0 + lead_h + 46.0 + card_h + 30.0 + done_size.y;
     let area_top = 40.0;
     let area_h = vh - 40.0 - 110.0;
     let top = area_top + ((area_h - total) / 2.0).max(0.0);
@@ -1209,10 +1212,14 @@ fn draw_welcome(ui: &mut Ui, p: &Painter, fx: &Arc<Fx>, screen: Rect, now: f64, 
     let mut order = Vec::new();
     // 1. title
     let (o1, t1) = reveal(0);
-    let tx = left + (inner_w - title.size().x) / 2.0;
     let sh = style::TextShadow { offset: 0.0, sharp_alpha: 0.0, blur: 30.0, blur_alpha: 0.5, blur_offset: 2.0 };
-    style::draw_galley(p, fx, screen, Pos2::new(tx, top + t1), &title, a * o1, Some(sh));
-    let mut y = top + title.size().y + 22.0;
+    let mut ty = top + t1;
+    for line in &title_lines {
+        let tx = left + (inner_w - line.size().x) / 2.0;
+        style::draw_galley(p, fx, screen, Pos2::new(tx, ty), line, a * o1, Some(sh));
+        ty += line.size().y;
+    }
+    let mut y = top + title_h + 22.0;
     // 2. lead
     let (o2, t2) = reveal(1);
     let la = a * o2;

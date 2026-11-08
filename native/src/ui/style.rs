@@ -108,6 +108,10 @@ pub enum Face {
     Sans450,
     Sans500,
     Sans600,
+    /// Tabular figures (`font-variant-numeric: tabular-nums` in style.css).
+    Sans450Tnum,
+    Sans500Tnum,
+    Sans600Tnum,
     /// Bodoni at the optical size closest to the rendered size.
     Serif,
 }
@@ -119,6 +123,9 @@ pub fn family(face: Face, size: f32) -> FontFamily {
             Face::Sans450 => "sans450",
             Face::Sans500 => "sans500",
             Face::Sans600 => "sans600",
+            Face::Sans450Tnum => "sans450tnum",
+            Face::Sans500Tnum => "sans500tnum",
+            Face::Sans600Tnum => "sans600tnum",
             Face::Serif if size < 34.0 => "serif26",
             Face::Serif if size < 64.0 => "serif44",
             Face::Serif => "serif96",
@@ -129,11 +136,15 @@ pub fn family(face: Face, size: f32) -> FontFamily {
 
 pub fn install_fonts(ctx: &egui::Context) {
     let mut defs = egui::FontDefinitions::default();
-    let fonts: [(&str, &'static [u8]); 7] = [
+    let fonts: [(&str, &'static [u8]); 10] = [
         ("sans400", include_bytes!("../../assets/sans-400.ttf")),
         ("sans450", include_bytes!("../../assets/sans-450.ttf")),
         ("sans500", include_bytes!("../../assets/sans-500.ttf")),
         ("sans600", include_bytes!("../../assets/sans-600.ttf")),
+        // tools/freeze_tnum.py
+        ("sans450tnum", include_bytes!("../../assets/sans-450-tnum.ttf")),
+        ("sans500tnum", include_bytes!("../../assets/sans-500-tnum.ttf")),
+        ("sans600tnum", include_bytes!("../../assets/sans-600-tnum.ttf")),
         ("serif26", include_bytes!("../../assets/serif-26.ttf")),
         ("serif44", include_bytes!("../../assets/serif-44.ttf")),
         ("serif96", include_bytes!("../../assets/serif-96.ttf")),
@@ -202,6 +213,25 @@ impl Text<'_> {
     pub fn galley(&self, painter: &Painter, max_width: Option<f32>) -> Arc<Galley> {
         painter.layout_job(self.job(max_width))
     }
+}
+
+/// Greedy word wrap like a CSS block of `max_width`: one galley per line, so each line
+/// can be centred on its own (`text-align: center`).
+pub fn wrap_lines(painter: &Painter, t: Text, max_width: f32) -> Vec<Arc<Galley>> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in t.text.split(' ') {
+        let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+        let width = Text { text: &candidate, ..t }.galley(painter, None).size().x;
+        if !line.is_empty() && width > max_width {
+            lines.push(Text { text: &line, ..t }.galley(painter, None));
+            line = word.to_string();
+        } else {
+            line = candidate;
+        }
+    }
+    lines.push(Text { text: &line, ..t }.galley(painter, None));
+    lines
 }
 
 /// Lays out text truncated at the *start* (CSS `direction: rtl` + ellipsis on a path).
