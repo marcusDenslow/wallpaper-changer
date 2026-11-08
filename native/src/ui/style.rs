@@ -105,7 +105,6 @@ pub const DEFAULT_GLOW: [f32; 3] = [0x7d as f32 / 255.0, 0x8a as f32 / 255.0, 0x
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Face {
     Sans400,
-    Sans450,
     Sans500,
     Sans600,
     /// Tabular figures (`font-variant-numeric: tabular-nums` in style.css).
@@ -120,7 +119,6 @@ pub fn family(face: Face, size: f32) -> FontFamily {
     FontFamily::Name(
         match face {
             Face::Sans400 => "sans400",
-            Face::Sans450 => "sans450",
             Face::Sans500 => "sans500",
             Face::Sans600 => "sans600",
             Face::Sans450Tnum => "sans450tnum",
@@ -136,12 +134,11 @@ pub fn family(face: Face, size: f32) -> FontFamily {
 
 pub fn install_fonts(ctx: &egui::Context) {
     let mut defs = egui::FontDefinitions::default();
-    let fonts: [(&str, &'static [u8]); 10] = [
+    let fonts: [(&str, &'static [u8]); 9] = [
         ("sans400", include_bytes!("../../assets/sans-400.ttf")),
-        ("sans450", include_bytes!("../../assets/sans-450.ttf")),
         ("sans500", include_bytes!("../../assets/sans-500.ttf")),
         ("sans600", include_bytes!("../../assets/sans-600.ttf")),
-        // tools/freeze_tnum.py
+        // tools/freeze_tnum.py; 450 is only ever used with tabular figures (sans-450.ttf is its source)
         ("sans450tnum", include_bytes!("../../assets/sans-450-tnum.ttf")),
         ("sans500tnum", include_bytes!("../../assets/sans-500-tnum.ttf")),
         ("sans600tnum", include_bytes!("../../assets/sans-600-tnum.ttf")),
