@@ -63,6 +63,8 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: native
+          # keep the compiled dependencies even if packaging or publishing fails
+          cache-on-failure: true
       - name: Test
         working-directory: native
         run: cargo test
@@ -77,8 +79,11 @@ jobs:
             choco install nsis -y --no-progress
             $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
           }
-          $defines = if ($env:APP_VERSION) { @("/DAPP_VERSION=$env:APP_VERSION") } else { @() }
-          & $nsis @defines installer\wallpaper-switcher.nsi
+          if ($env:APP_VERSION) {
+            & $nsis "/DAPP_VERSION=$env:APP_VERSION" installer\wallpaper-switcher.nsi
+          } else {
+            & $nsis installer\wallpaper-switcher.nsi
+          }
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
