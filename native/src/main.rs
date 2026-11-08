@@ -361,17 +361,16 @@ fn reduce_motion() -> bool {
     false
 }
 
-/// Gives freed memory back to Windows after the overlay closes.
+/// Gives freed heap memory back to Windows after the overlay closes. (No EmptyWorkingSet:
+/// it frees nothing, it only pages memory out so Task Manager shows less, and the next
+/// warm open has to fault it back in.)
 fn trim_memory() {
     #[cfg(windows)]
     unsafe {
         use windows::Win32::System::Memory::{GetProcessHeap, HeapCompact, HEAP_FLAGS};
-        use windows::Win32::System::ProcessStatus::EmptyWorkingSet;
-        use windows::Win32::System::Threading::GetCurrentProcess;
         if let Ok(heap) = GetProcessHeap() {
             HeapCompact(heap, HEAP_FLAGS(0));
         }
-        let _ = EmptyWorkingSet(GetCurrentProcess());
     }
 }
 
