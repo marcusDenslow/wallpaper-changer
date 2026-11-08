@@ -1,24 +1,76 @@
 name: Build installer
 
+# Releasing: publish a release on GitHub (Releases → Draft a new release) with a tag
+# like v2.0.1 or v2.0.1-nightly.1. This workflow then builds that version and attaches
+# the installer to the release. See "Make a release" in the README.
+
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Also publish a GitHub release with this tag (e.g. v2.0.1). Leave empty to only build.
+        required: false
+        default: ""
+      release_name:
+        description: Release title (defaults to the tag)
+        required: false
+        default: ""
+      release_notes:
+        description: Release notes
+        required: false
+        default: ""
+      prerelease:
+        description: Mark the release as a pre-release (nightly, not tested yet)
+        type: boolean
+        default: true
+      release_target:
+        description: Branch or commit to tag (default the one being built). When running from a branch that changes workflow files, use main; GitHub won't let the workflow tag those commits.
+        required: false
+        default: ""
 
 jobs:
   windows:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
+      - name: Take the version from the release tag
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          $version = $env:TAG -replace '^v', ''
+          $numeric = ($version -split '-')[0]
+          if ($numeric -notmatch '^\d+\.\d+\.\d+$') {
+            throw "The tag '$env:TAG' should look like v2.0.1 or v2.0.1-nightly.1"
+          }
+          $toml = Get-Content -Raw native\Cargo.toml
+          # first `version = "..."` at the start of a line is the [package] one (works with CRLF too)
+          $toml = ([regex]'(?m)^version = "[^"]*"').Replace($toml, "version = `"$version`"", 1)
+          Set-Content -Path native\Cargo.toml -Value $toml -NoNewline
+          "APP_VERSION=$numeric" >> $env:GITHUB_ENV
+          "RELEASE_TAG=$env:TAG" >> $env:GITHUB_ENV
+          Write-Host "Building version $version (installer $numeric)"
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
-      - run: npm install
-      - run: npm run tauri build
+          workspaces: native
+          # keep the compiled dependencies even if packaging or publishing fails
+          cache-on-failure: true
+      - name: Test
+        working-directory: native
+        run: cargo test
+      - name: Build
+        working-directory: native
+        run: cargo build --release
       - name: Build installer
         shell: pwsh
         run: |
@@ -27,9 +79,39 @@ jobs:
             choco install nsis -y --no-progress
             $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
           }
-          & $nsis installer\wallpaper-switcher.nsi
+          if ($env:APP_VERSION) {
+            & $nsis "/DAPP_VERSION=$env:APP_VERSION" installer\wallpaper-switcher.nsi
+          } else {
+            & $nsis installer\wallpaper-switcher.nsi
+          }
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: wallpaper-switcher-setup
           path: installer/*.exe
+      - name: Attach the installer to the release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload $env:RELEASE_TAG (Get-Item installer\*.exe).FullName --clobber
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Publish release
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ inputs.release_name }}
+          NOTES: ${{ inputs.release_notes }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          TARGET: ${{ inputs.release_target }}
+        run: |
+          $installer = Get-Item installer\*.exe
+          $target = if ($env:TARGET) { $env:TARGET } else { $env:GITHUB_SHA }
+          Set-Content -Path release-notes.md -Value $env:NOTES -Encoding utf8
+          $title = if ($env:TITLE) { $env:TITLE } else { $env:RELEASE_TAG }
+          $release = @($env:RELEASE_TAG, $installer.FullName, '--target', $target, '--title', $title, '--notes-file', 'release-notes.md')
+          if ($env:PRERELEASE -eq 'true') { $release += '--prerelease' }
+          gh release create @release
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

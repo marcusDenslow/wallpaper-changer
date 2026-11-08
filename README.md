@@ -4,7 +4,7 @@ A see-through wallpaper picker for Windows 10 and 11. Press a shortcut, flick th
 
 ## Install
 
-1. Download `Wallpaper Switcher Setup 1.1.0.exe` and run it.
+1. Download the latest `Wallpaper Switcher Setup` installer from [Releases](https://github.com/marcusDenslow/wallpaper-changer/releases) and run it.
 2. Windows may show "Windows protected your PC" because the app isn't code-signed yet. Click **More info**, then **Run anyway**.
 3. Click **Install**. No admin rights needed: it installs just for your account.
 
@@ -78,6 +78,16 @@ makensis installer\wallpaper-switcher.nsi
 ```
 
 The installer is written to the `installer` folder.
+
+## Make a release
+
+1. On GitHub, open **Releases** and click **Draft a new release**.
+2. Under **Choose a tag**, type a new tag like `v2.0.1` and pick **Create new tag on publish**. For a build you haven't tested yet, use something like `v2.0.1-nightly.1` and tick **Set as a pre-release**.
+3. Write the title and notes, then click **Publish release**.
+
+GitHub then builds that version on Windows and attaches the installer to the release, usually within 15 minutes (progress is under **Actions**). The tag is the version: the app and installer pick it up, so there's no version number to change in the code.
+
+Every push to `main` and every pull request is also built and tested; the installer from those builds is under the run's **Artifacts** in **Actions**.
 
 - `native/src` is the whole app, in Rust: a tiny tray process (shortcut, tray icon) that starts the overlay process on demand. The overlay draws with egui on Direct3D 12 through a DirectComposition swapchain, stays warm for two minutes after closing, then exits and frees all of its memory
 - `native/src/ui` is the overlay itself: row, folder stacks, grid, caption, hints, screen map, settings and welcome

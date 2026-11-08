@@ -6,7 +6,10 @@ RequestExecutionLevel user
 !define APP_NAME "Wallpaper Switcher"
 !define APP_EXE "wallswitch.exe"
 !define APP_ID "com.wallpaperswitcher.app"
-!define APP_VERSION "2.0.0"
+; CI passes /DAPP_VERSION=x.y.z from the release tag
+!ifndef APP_VERSION
+  !define APP_VERSION "2.0.0"
+!endif
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WallpaperSwitcher"
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
 !define APPROVED_KEY "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
