@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
 
 pub const DEFAULT_SHORTCUT: &str = "Ctrl+Alt+W";
 
@@ -55,23 +54,31 @@ impl Default for Settings {
     }
 }
 
-fn file(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_config_dir().ok().map(|dir| dir.join("settings.json"))
+pub fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join(crate::APP_ID))
 }
 
-pub fn exists(app: &AppHandle) -> bool {
-    file(app).is_some_and(|path| path.is_file())
+pub fn cache_dir() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(crate::APP_ID))
 }
 
-pub fn load(app: &AppHandle) -> Settings {
-    file(app)
+fn file() -> Option<PathBuf> {
+    config_dir().map(|dir| dir.join("settings.json"))
+}
+
+pub fn exists() -> bool {
+    file().is_some_and(|path| path.is_file())
+}
+
+pub fn load() -> Settings {
+    file()
         .and_then(|path| fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
 }
 
-pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
-    let path = file(app).ok_or("Couldn't find a place to store settings")?;
+pub fn save(settings: &Settings) -> Result<(), String> {
+    let path = file().ok_or("Couldn't find a place to store settings")?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -81,13 +88,13 @@ pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
-pub fn wallpaper_folder(app: &AppHandle, settings: &Settings) -> Option<PathBuf> {
+pub fn wallpaper_folder(settings: &Settings) -> Option<PathBuf> {
     if let Some(folder) = &settings.folder {
         if folder.is_dir() {
             return Some(folder.clone());
         }
     }
-    let pictures = app.path().picture_dir().ok()?;
+    let pictures = pictures_dir()?;
     for name in ["Wallpapers", "Wallpaper", "wallpapers", "wallpaper"] {
         let candidate = pictures.join(name);
         if candidate.is_dir() {
@@ -97,4 +104,19 @@ pub fn wallpaper_folder(app: &AppHandle, settings: &Settings) -> Option<PathBuf>
     let folder = pictures.join("Wallpapers");
     let _ = fs::create_dir_all(&folder);
     Some(folder)
+}
+
+fn pictures_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::UI::Shell::{FOLDERID_Pictures, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+        if let Ok(raw) = SHGetKnownFolderPath(&FOLDERID_Pictures, KF_FLAG_DEFAULT, None) {
+            let path = raw.to_string().ok().map(PathBuf::from);
+            windows::Win32::System::Com::CoTaskMemFree(Some(raw.0 as _));
+            if path.is_some() {
+                return path;
+            }
+        }
+    }
+    std::env::var_os("USERPROFILE").map(|d| PathBuf::from(d).join("Pictures"))
 }

@@ -5,15 +5,50 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::BufWriter;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{self, AtomicU64};
+use std::sync::atomic::{self, AtomicU32, AtomicU64};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, SystemTime};
 
 const EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp"];
-const THUMB_W: u32 = 1280;
-const THUMB_H: u32 = 720;
 const MAX_DEPTH: usize = 3;
+/// Thumbnail widths (16:9). 1280 is what 1.1.0 always used.
+const THUMB_SIZES: [u32; 3] = [960, 1280, 1600];
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static THUMB_W: AtomicU32 = AtomicU32::new(THUMB_SIZES[0]);
+
+/// Image sizes from earlier scans, keyed by path and checked against size + modified time,
+/// so reopening doesn't open every file again just to read its header.
+type Stamp = (u64, Option<SystemTime>);
+static SIZES: LazyLock<Mutex<HashMap<PathBuf, (Stamp, (u32, u32))>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Smallest thumbnail that covers the selected card on the biggest screen.
+/// The card is min(34vw, 720px, 42vh × 16/9) (ui::Ui::measure); the 720px cap is in
+/// DPI-scaled pixels, which we don't know here, so it's left out: a 4K screen gets
+/// 1280 (as in 1.1.0) even at 100%, 1080p and 1440p screens get 960.
+pub fn thumb_width_for(screens: &[[i32; 4]]) -> u32 {
+    let card = screens
+        .iter()
+        .map(|r| {
+            let (w, h) = ((r[2] - r[0]).max(0) as f32, (r[3] - r[1]).max(0) as f32);
+            (w * 0.34).min(h * 0.42 * 16.0 / 9.0)
+        })
+        .fold(0.0, f32::max);
+    // up to 5% upscaling isn't visible
+    THUMB_SIZES.into_iter().find(|&t| card <= t as f32 * 1.05).unwrap_or(THUMB_SIZES[THUMB_SIZES.len() - 1])
+}
+
+/// Picks the thumbnail size for these screens (physical pixels). Call before asking for thumbnails.
+pub fn use_screens(screens: &[[i32; 4]]) {
+    THUMB_W.store(thumb_width_for(screens), atomic::Ordering::Relaxed);
+}
+
+fn thumb_size() -> (u32, u32) {
+    let w = THUMB_W.load(atomic::Ordering::Relaxed);
+    (w, w * 9 / 16)
+}
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -38,9 +73,19 @@ pub fn is_image(path: &Path) -> bool {
         .is_some_and(|ext| EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
+/// Lists the wallpapers under `root`, remembering image sizes for the next scan.
 pub fn scan(root: &Path) -> Vec<Wallpaper> {
+    scan_with(root, true)
+}
+
+/// Same, without keeping image sizes around (for the long-lived tray process).
+pub fn scan_once(root: &Path) -> Vec<Wallpaper> {
+    scan_with(root, false)
+}
+
+fn scan_with(root: &Path, remember: bool) -> Vec<Wallpaper> {
     let mut found = Vec::new();
-    walk(root, root, 0, &mut found);
+    walk(root, root, 0, remember, &mut found);
     found.sort_by(|a, b| {
         a.folder
             .to_lowercase()
@@ -50,7 +95,7 @@ pub fn scan(root: &Path) -> Vec<Wallpaper> {
     found
 }
 
-fn walk(root: &Path, dir: &Path, depth: usize, found: &mut Vec<Wallpaper>) {
+fn walk(root: &Path, dir: &Path, depth: usize, remember: bool, found: &mut Vec<Wallpaper>) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -61,7 +106,7 @@ fn walk(root: &Path, dir: &Path, depth: usize, found: &mut Vec<Wallpaper>) {
         let Ok(meta) = entry.metadata() else { continue };
         if meta.is_dir() {
             if depth < MAX_DEPTH {
-                walk(root, &path, depth + 1, found);
+                walk(root, &path, depth + 1, remember, found);
             }
             continue;
         }
@@ -69,9 +114,11 @@ fn walk(root: &Path, dir: &Path, depth: usize, found: &mut Vec<Wallpaper>) {
             continue;
         }
 
-        let (width, height) = imagesize::size(&path)
-            .map(|size| (size.width as u32, size.height as u32))
-            .unwrap_or((0, 0));
+        let (width, height) = if remember {
+            image_size(&path, (meta.len(), meta.modified().ok()))
+        } else {
+            imagesize::size(&path).map(|s| (s.width as u32, s.height as u32)).unwrap_or((0, 0))
+        };
         let folder = path
             .parent()
             .and_then(|parent| parent.strip_prefix(root).ok())
@@ -87,6 +134,17 @@ fn walk(root: &Path, dir: &Path, depth: usize, found: &mut Vec<Wallpaper>) {
             height,
         });
     }
+}
+
+fn image_size(path: &Path, stamp: Stamp) -> (u32, u32) {
+    if let Some((seen, size)) = SIZES.lock().unwrap().get(path) {
+        if *seen == stamp {
+            return *size;
+        }
+    }
+    let size = imagesize::size(path).map(|s| (s.width as u32, s.height as u32)).unwrap_or((0, 0));
+    SIZES.lock().unwrap().insert(path.to_path_buf(), (stamp, size));
+    size
 }
 
 fn natural_cmp(a: &str, b: &str) -> Ordering {
@@ -157,14 +215,19 @@ fn write_atomic(dir: &Path, key: u64, target: &Path, write: impl FnOnce(&Path) -
     })
 }
 
-pub fn thumbnail(cache_dir: &Path, source: &Path) -> Result<Thumb, String> {
-    let meta = fs::metadata(source).map_err(|e| format!("{}: {e}", source.display()))?;
+fn cache_key(source: &Path, meta: &fs::Metadata, width: u32) -> u64 {
     let mut hasher = DefaultHasher::new();
     source.hash(&mut hasher);
     meta.len().hash(&mut hasher);
     meta.modified().ok().hash(&mut hasher);
-    THUMB_W.hash(&mut hasher);
-    let key = hasher.finish();
+    width.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub fn thumbnail(cache_dir: &Path, source: &Path) -> Result<Thumb, String> {
+    let meta = fs::metadata(source).map_err(|e| format!("{}: {e}", source.display()))?;
+    let (thumb_w, thumb_h) = thumb_size();
+    let key = cache_key(source, &meta, thumb_w);
 
     let dir = cache_dir.join("thumbs");
     let jpg = dir.join(format!("{key:016x}.jpg"));
@@ -186,7 +249,7 @@ pub fn thumbnail(cache_dir: &Path, source: &Path) -> Result<Thumb, String> {
         .map_err(|e| format!("Couldn't read {}: {e}", source.display()))?;
 
     let (w, h) = (img.width().max(1), img.height().max(1));
-    let scale = (THUMB_W as f64 / w as f64).max(THUMB_H as f64 / h as f64).min(1.0);
+    let scale = (thumb_w as f64 / w as f64).max(thumb_h as f64 / h as f64).min(1.0);
     let small = if scale < 1.0 {
         let tw = ((w as f64 * scale).round() as u32).max(1);
         let th = ((h as f64 * scale).round() as u32).max(1);
@@ -205,6 +268,42 @@ pub fn thumbnail(cache_dir: &Path, source: &Path) -> Result<Thumb, String> {
     })?;
     write_atomic(&dir, key, &color_file, |tmp| fs::write(tmp, &color).map_err(|e| e.to_string()))?;
     Ok(Thumb { path: jpg.to_string_lossy().into_owned(), color })
+}
+
+/// Deletes cached thumbnails that no wallpaper in `items` uses at the current size and that
+/// are over a week old: thumbnails of removed or edited wallpapers, other sizes (1.1.0 made
+/// 1280px ones), and leftovers from interrupted writes. Runs at most once a day.
+pub fn prune(cache_dir: &Path, items: &[Wallpaper]) {
+    let dir = cache_dir.join("thumbs");
+    let marker = dir.join(".pruned");
+    let now = SystemTime::now();
+    let age = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok());
+    if age(&marker).is_some_and(|a| a < Duration::from_secs(24 * 3600)) {
+        return;
+    }
+    let width = thumb_size().0;
+    let keep: HashSet<String> = items
+        .iter()
+        .filter_map(|item| {
+            let source = Path::new(&item.path);
+            fs::metadata(source).ok().map(|meta| format!("{:016x}", cache_key(source, &meta, width)))
+        })
+        .collect();
+    let Ok(entries) = fs::read_dir(&dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let key = name.split('.').next().unwrap_or("");
+        if key.len() != 16 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue; // not ours (or the marker)
+        }
+        let old = age(&path).is_some_and(|a| a > Duration::from_secs(7 * 24 * 3600));
+        let stale_tmp = name.ends_with(".tmp") && age(&path).is_some_and(|a| a > Duration::from_secs(3600));
+        if (old && !keep.contains(key)) || stale_tmp {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    let _ = fs::write(&marker, b"");
 }
 
 pub fn prewarm(cache_dir: PathBuf, items: Vec<Wallpaper>) {
@@ -249,12 +348,46 @@ mod tests {
         let wide = thumbnail(&cache, Path::new(&found[1].path)).unwrap();
         assert!(wide.color.starts_with('#') && wide.color.len() == 7);
         let (tw, th) = image::image_dimensions(&wide.path).unwrap();
-        assert!(tw >= THUMB_W && th >= THUMB_H && tw < 3840, "{tw}x{th}");
+        let (min_w, min_h) = thumb_size();
+        assert!(tw >= min_w && th >= min_h && tw < 3840, "{tw}x{th}");
         assert_eq!(thumbnail(&cache, Path::new(&found[1].path)).unwrap().path, wide.path);
 
         let small = thumbnail(&cache, Path::new(&found[0].path)).unwrap();
         assert_eq!(image::image_dimensions(&small.path).unwrap(), (800, 600));
         assert_eq!(small.color, "#0a141e");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn thumbnail_size_follows_the_biggest_screen() {
+        assert_eq!(thumb_width_for(&[]), 960);
+        assert_eq!(thumb_width_for(&[[0, 0, 1920, 1080]]), 960);
+        assert_eq!(thumb_width_for(&[[0, 0, 2560, 1440]]), 960);
+        assert_eq!(thumb_width_for(&[[0, 0, 1920, 1080], [1920, 0, 5760, 2160]]), 1280);
+        assert_eq!(thumb_width_for(&[[0, 0, 5120, 2880]]), 1600);
+    }
+
+    #[test]
+    fn prune_keeps_current_thumbnails() {
+        let dir = std::env::temp_dir().join(format!("wallswitch-prune-{}", std::process::id()));
+        let thumbs = dir.join("cache").join("thumbs");
+        fs::create_dir_all(&thumbs).unwrap();
+        image::RgbImage::from_pixel(64, 36, image::Rgb([1, 2, 3])).save(dir.join("a.jpg")).unwrap();
+        let items = scan(&dir);
+        let kept = thumbnail(&dir.join("cache"), Path::new(&items[0].path)).unwrap();
+        let week_old = SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
+        let orphan = thumbs.join("0123456789abcdef.jpg");
+        let fresh_orphan = thumbs.join("fedcba9876543210.jpg");
+        for f in [&orphan, &fresh_orphan] {
+            fs::write(f, b"x").unwrap();
+        }
+        for f in [&orphan, Path::new(&kept.path)] {
+            File::options().write(true).open(f).unwrap().set_modified(week_old).unwrap();
+        }
+        prune(&dir.join("cache"), &items);
+        assert!(!orphan.exists());
+        assert!(fresh_orphan.exists(), "recent files stay: they may belong to a wallpaper outside the folder");
+        assert!(Path::new(&kept.path).exists());
         fs::remove_dir_all(&dir).ok();
     }
 }

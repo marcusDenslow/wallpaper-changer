@@ -6,14 +6,13 @@ RequestExecutionLevel user
 !define APP_NAME "Wallpaper Switcher"
 !define APP_EXE "wallswitch.exe"
 !define APP_ID "com.wallpaperswitcher.app"
-!define APP_VERSION "1.1.0"
+!define APP_VERSION "2.0.0"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WallpaperSwitcher"
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
 !define APPROVED_KEY "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
-!define WEBVIEW2_ID "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 
 !ifndef BUILD_DIR
-  !define BUILD_DIR "..\src-tauri\target\release"
+  !define BUILD_DIR "..\native\target\release"
 !endif
 
 Name "${APP_NAME}"
@@ -35,8 +34,8 @@ VIAddVersionKey "LegalCopyright" "Copyright 2026 ${APP_NAME}"
 !include FileFunc.nsh
 !include x64.nsh
 
-!define MUI_ICON "..\src-tauri\icons\icon.ico"
-!define MUI_UNICON "..\src-tauri\icons\icon.ico"
+!define MUI_ICON "..\native\assets\icon.ico"
+!define MUI_UNICON "..\native\assets\icon.ico"
 !define MUI_WELCOMEFINISHPAGE_BITMAP "welcome.bmp"
 !define MUI_UNWELCOMEFINISHPAGE_BITMAP "welcome.bmp"
 !define MUI_ABORTWARNING
@@ -77,27 +76,12 @@ Function RenameNextToInstall
   SendMessage $0 ${WM_SETTEXT} 0 "STR:Install"
 FunctionEnd
 
-Function CheckWebView2
-  SetRegView 64
-  ReadRegStr $0 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\${WEBVIEW2_ID}" "pv"
-  ${If} $0 == ""
-    ReadRegStr $0 HKCU "Software\Microsoft\EdgeUpdate\Clients\${WEBVIEW2_ID}" "pv"
-  ${EndIf}
-  SetRegView default
-  ${If} $0 == ""
-  ${OrIf} $0 == "0.0.0.0"
-    MessageBox MB_YESNO|MB_ICONINFORMATION "${APP_NAME} needs Microsoft Edge WebView2, which isn't on this PC yet.$\r$\n$\r$\nOpen the download page now?" /SD IDNO IDNO done
-    ExecShell "open" "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
-    done:
-  ${EndIf}
-FunctionEnd
-
 Section "Install"
   !insertmacro StopRunningApp
 
   SetOutPath "$INSTDIR"
   File "${BUILD_DIR}\${APP_EXE}"
-  File /nonfatal "${BUILD_DIR}\WebView2Loader.dll"
+  Delete "$INSTDIR\WebView2Loader.dll" ; left over from 1.x (WebView2 build)
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   CreateShortcut "$SMPROGRAMS\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
@@ -123,7 +107,6 @@ Section "Install"
     DeleteRegValue HKCU "${APPROVED_KEY}" "${APP_NAME}"
   ${EndIf}
 
-  Call CheckWebView2
 SectionEnd
 
 Section "Uninstall"
