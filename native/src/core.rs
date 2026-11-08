@@ -135,8 +135,11 @@ impl Core {
     pub fn preload(&mut self, thumbs: crate::thumbs::ThumbHandle) {
         let folder = self.folder();
         let last = self.settings.last_wallpaper.clone();
+        let cache = self.cache.clone();
         self.preloaded = Some(std::thread::spawn(move || {
-            let current: Vec<String> = sorted_screens()
+            let screens = sorted_screens();
+            library::use_screens(&screens.iter().map(|s| s.rect).collect::<Vec<_>>());
+            let current: Vec<String> = screens
                 .into_iter()
                 .filter_map(|s| s.wallpaper)
                 .chain(last)
@@ -145,14 +148,20 @@ impl Core {
             for p in current.iter().rev() {
                 thumbs.want_first(p);
             }
-            folder.map(|f| library::scan(&f)).unwrap_or_default()
+            let items = folder.map(|f| library::scan(&f)).unwrap_or_default();
+            let keep = items.clone();
+            std::thread::spawn(move || library::prune(&cache, &keep));
+            items
         }));
     }
 
     pub fn warm_thumbnails(&self) {
         if let Some(folder) = self.folder() {
             let cache = self.cache.clone();
-            std::thread::spawn(move || library::prewarm(cache, library::scan(&folder)));
+            std::thread::spawn(move || {
+                library::use_screens(&sorted_screens().iter().map(|s| s.rect).collect::<Vec<_>>());
+                library::prewarm(cache, library::scan_once(&folder))
+            });
         }
     }
 
