@@ -8,8 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 
 const WORKERS: usize = 3;
-/// ponytail: fixed cap; a row shows ~15 cards, a screen of grid tiles ~30.
-const MAX_TEXTURES: usize = 48;
+/// GPU memory kept for thumbnails that aren't on screen any more. A 960px thumbnail with
+/// mips is ~3.1 MB, a 1280px one ~5.5 MB. On-screen thumbnails are never evicted, so a
+/// grid full of tiles can go over this; it only limits what's cached off screen.
+const MAX_BYTES: u64 = 128 << 20;
 
 pub struct Decoded {
     pub path: String,
@@ -163,31 +165,30 @@ impl Thumbs {
         done
     }
 
-    /// Call once per frame after drawing: frees the least recently drawn textures over the cap.
+    /// Call once per frame after drawing: frees the least recently drawn textures over the budget.
     pub fn end_frame(&mut self) {
         self.frame += 1;
-        let ready: Vec<(String, u64)> = self
-            .states
-            .iter()
-            .filter(|(_, s)| matches!(s, State::Ready { .. }))
-            .map(|(k, _)| (k.clone(), *self.last_used.get(k).unwrap_or(&0)))
-            .collect();
-        if ready.len() <= MAX_TEXTURES {
+        let mut total = 0u64;
+        let mut ready: Vec<(String, u64, u64)> = Vec::new();
+        for (k, s) in &self.states {
+            if let State::Ready { tex, .. } = s {
+                total += tex.bytes();
+                ready.push((k.clone(), *self.last_used.get(k).unwrap_or(&0), tex.bytes()));
+            }
+        }
+        if total <= MAX_BYTES {
             return;
         }
-        let mut ready = ready;
-        ready.sort_by_key(|(_, used)| *used);
-        for (k, used) in ready.into_iter().take_while(|_| true) {
-            if self.states.values().filter(|s| matches!(s, State::Ready { .. })).count() <= MAX_TEXTURES {
-                break;
-            }
-            if used + 2 >= self.frame {
-                break; // still on screen
+        ready.sort_by_key(|(_, used, _)| *used);
+        for (k, used, bytes) in ready {
+            if total <= MAX_BYTES || used + 2 >= self.frame {
+                break; // under budget, or everything left is still on screen
             }
             if let Some(State::Ready { tex, .. }) = self.states.remove(&k) {
                 tex.destroy();
             }
             self.last_used.remove(&k);
+            total -= bytes;
         }
     }
 
