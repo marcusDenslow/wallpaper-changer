@@ -2,6 +2,14 @@
 
 A see-through wallpaper picker for Windows 10 and 11. Press a shortcut, flick through your wallpapers, hit Enter.
 
+## How light it is
+
+| | 1.1 (WebView2) | 2.0 (native) |
+| --- | --- | --- |
+| Waiting in the tray | ~830 MB | ~3 MB |
+| While open | — | ~240 MB, freed after closing |
+| Needs WebView2 | Yes | No |
+
 ## Install
 
 1. Download `Wallpaper Switcher Setup 1.1.0.exe` and run it.
