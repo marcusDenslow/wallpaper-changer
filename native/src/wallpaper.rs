@@ -238,7 +238,138 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod imp {
+    use super::Screen;
+    use serde::Deserialize;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    // Lists every screen with its frame, scale and current wallpaper.
+    // NSScreen uses a bottom-left origin in points; the rest of the app uses a top-left origin in
+    // physical pixels (what winit reports), so the conversion happens in `screens()`.
+    const LIST: &str = r#"
+function run(argv) {
+  ObjC.import('AppKit');
+  const screens = $.NSScreen.screens;
+  const count = screens.count;
+  const primaryH = screens.objectAtIndex(0).frame.size.height;
+  const ws = $.NSWorkspace.sharedWorkspace;
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const s = screens.objectAtIndex(i);
+    const f = s.frame;
+    const num = ObjC.unwrap(s.deviceDescription.objectForKey('NSScreenNumber'));
+    let p = '';
+    try { p = ObjC.unwrap(ws.desktopImageURLForScreen(s).path) || ''; } catch (e) {}
+    out.push({
+      id: String(num),
+      x: f.origin.x,
+      y: primaryH - (f.origin.y + f.size.height),
+      w: f.size.width,
+      h: f.size.height,
+      scale: s.backingScaleFactor,
+      path: p
+    });
+  }
+  return JSON.stringify(out);
+}
+"#;
+
+    // argv[0] = image path, argv[1] (optional) = NSScreenNumber of the one screen to change.
+    const SET: &str = r#"
+function run(argv) {
+  ObjC.import('AppKit');
+  const url = $.NSURL.fileURLWithPath(argv[0]);
+  const only = argv.length > 1 ? argv[1] : '';
+  const ws = $.NSWorkspace.sharedWorkspace;
+  let options = $();
+  try {
+    options = $.NSDictionary.dictionaryWithObjectsForKeys(
+      $([$.NSNumber.numberWithInt(3), $.NSNumber.numberWithBool(true)]),
+      $(['NSWorkspaceDesktopImageScalingKey', 'NSWorkspaceDesktopImageAllowClippingKey'])
+    );
+  } catch (e) { options = $(); }
+  const screens = $.NSScreen.screens;
+  let done = 0;
+  let lastError = '';
+  for (let i = 0; i < screens.count; i++) {
+    const s = screens.objectAtIndex(i);
+    const num = String(ObjC.unwrap(s.deviceDescription.objectForKey('NSScreenNumber')));
+    if (only && num !== only) continue;
+    const err = Ref();
+    if (ws.setDesktopImageURLForScreenOptionsError(url, s, options, err)) {
+      done++;
+    } else {
+      try { lastError = ObjC.unwrap(err[0].localizedDescription); } catch (e) { lastError = 'unknown error'; }
+    }
+  }
+  if (done === 0) throw new Error(lastError || 'No screen accepted the wallpaper');
+  return 'ok';
+}
+"#;
+
+    #[derive(Deserialize)]
+    struct Raw {
+        id: String,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        scale: f64,
+        path: String,
+    }
+
+    fn osascript(script: &str, args: &[&str]) -> Result<String, String> {
+        let output = Command::new("osascript")
+            .args(["-l", "JavaScript", "-e", script])
+            .args(args)
+            .output()
+            .map_err(|e| format!("Couldn't run osascript: {e}"))?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        }
+    }
+
+    pub fn set(path: &Path, screen: Option<&str>, _full_jpeg_quality: bool) -> Result<(), String> {
+        let path = path.to_str().ok_or("That file name isn't valid UTF-8")?;
+        let mut args = vec![path];
+        if let Some(id) = screen {
+            args.push(id);
+        }
+        osascript(SET, &args).map(|_| ()).map_err(|e| format!("macOS refused the wallpaper: {e}"))
+    }
+
+    pub fn screens() -> Vec<Screen> {
+        let Ok(json) = osascript(LIST, &[]) else { return Vec::new() };
+        let Ok(raw) = serde_json::from_str::<Vec<Raw>>(&json) else { return Vec::new() };
+        raw.into_iter()
+            .filter_map(|r| {
+                let left = (r.x * r.scale).round() as i32;
+                let top = (r.y * r.scale).round() as i32;
+                let right = left + (r.w * r.scale).round() as i32;
+                let bottom = top + (r.h * r.scale).round() as i32;
+                if right <= left || bottom <= top {
+                    return None;
+                }
+                let wallpaper = Some(r.path).filter(|p| !p.is_empty()).map(PathBuf::from);
+                Some(Screen { id: r.id, rect: [left, top, right, bottom], wallpaper })
+            })
+            .collect()
+    }
+
+    pub fn set_lock_screen(_path: &Path) -> Result<(), String> {
+        Err("macOS doesn't let apps change the lock screen picture".into())
+    }
+
+    pub fn lock_screen_bytes() -> Result<Vec<u8>, String> {
+        Err("macOS doesn't let apps read the lock screen picture".into())
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use super::Screen;
     use std::path::Path;

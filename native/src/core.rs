@@ -235,7 +235,7 @@ impl Core {
         let previous = self.settings.clone();
         next.last_wallpaper = previous.last_wallpaper.clone();
         next.lock_wallpaper = previous.lock_wallpaper.clone();
-        if !matches!(next.lock_mode.as_str(), "off" | "main" | "own") {
+        if !matches!(next.lock_mode.as_str(), "off" | "main" | "own") || cfg!(target_os = "macos") {
             next.lock_mode = "off".into();
         }
         if !matches!(next.lock_spot.as_str(), "left" | "above") {
@@ -292,7 +292,7 @@ impl Core {
 
     pub fn open_folder(&self) -> Result<(), String> {
         let folder = self.folder().ok_or("There's no wallpaper folder yet")?;
-        std::process::Command::new("explorer")
+        std::process::Command::new(if cfg!(target_os = "macos") { "open" } else { "explorer" })
             .arg(&folder)
             .spawn()
             .map(|_| ())
@@ -304,7 +304,8 @@ pub fn readable_shortcut(accel: &str) -> String {
     accel
         .split('+')
         .map(|key| match key.trim().to_ascii_lowercase().as_str() {
-            "super" | "cmd" | "command" => "Win".to_string(),
+            "super" | "cmd" | "command" => (if cfg!(target_os = "macos") { "Cmd" } else { "Win" }).to_string(),
+            "alt" | "option" => (if cfg!(target_os = "macos") { "Option" } else { "Alt" }).to_string(),
             "control" | "ctrl" => "Ctrl".to_string(),
             other => {
                 let mut chars = other.chars();

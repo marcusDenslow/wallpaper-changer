@@ -547,8 +547,12 @@ fn fields_for(ui: &Ui, tab: u8) -> Vec<Field> {
             folder.path = Some(ui.snapshot.folder.clone().unwrap_or_else(|| "Not set".into()));
             v.push(folder);
             v.push(f("Shortcut", Some("Opens the switcher from anywhere."), Control::Shortcut));
-            v.push(sw("Start with Windows", "Waits quietly in the tray until you press the shortcut.", Ctl::Autostart, s.autostart));
-            v.push(sw("Full-quality JPEGs", "Stops Windows recompressing JPEGs to 85%.", Ctl::FullJpeg, s.full_jpeg_quality));
+            if cfg!(target_os = "macos") {
+                v.push(sw("Start at login", "Waits quietly in the menu bar until you press the shortcut.", Ctl::Autostart, s.autostart));
+            } else {
+                v.push(sw("Start with Windows", "Waits quietly in the tray until you press the shortcut.", Ctl::Autostart, s.autostart));
+                v.push(sw("Full-quality JPEGs", "Stops Windows recompressing JPEGs to 85%.", Ctl::FullJpeg, s.full_jpeg_quality));
+            }
         }
         1 => {
             v.push(f(
@@ -584,14 +588,16 @@ fn fields_for(ui: &Ui, tab: u8) -> Vec<Field> {
                     Control::Segmented(MAPS.iter().enumerate().map(|(i, l)| (Ctl::MapSize(i as u8), l.1, s.map_size == l.0)).collect()),
                 ));
             }
-            let hint = LOCKS.iter().find(|l| l.0 == s.lock_mode).unwrap_or(&LOCKS[0]).2;
-            v.push(f("Lock screen", Some(hint), Control::Select));
-            if s.lock_mode == "own" {
-                v.push(f(
-                    "Lock screen on the map",
-                    Some("Where its tile sits next to your screens."),
-                    Control::Segmented(SPOTS.iter().enumerate().map(|(i, l)| (Ctl::LockSpot(i as u8), l.1, s.lock_spot == l.0)).collect()),
-                ));
+            if !cfg!(target_os = "macos") {
+                let hint = LOCKS.iter().find(|l| l.0 == s.lock_mode).unwrap_or(&LOCKS[0]).2;
+                v.push(f("Lock screen", Some(hint), Control::Select));
+                if s.lock_mode == "own" {
+                    v.push(f(
+                        "Lock screen on the map",
+                        Some("Where its tile sits next to your screens."),
+                        Control::Segmented(SPOTS.iter().enumerate().map(|(i, l)| (Ctl::LockSpot(i as u8), l.1, s.lock_spot == l.0)).collect()),
+                    ));
+                }
             }
             // `.pane > .field:first-child { border-top: 0 }` matches the DOM-first field even when hidden
             if multi {
@@ -1175,8 +1181,8 @@ fn draw_welcome(ui: &mut Ui, p: &Painter, fx: &Arc<Fx>, screen: Rect, now: f64, 
             whole_row: None,
         },
         Field {
-            label: "Start with Windows".into(),
-            hint: Some("Waits in the tray so the shortcut always works.".into()),
+            label: (if cfg!(target_os = "macos") { "Start at login" } else { "Start with Windows" }).into(),
+            hint: Some((if cfg!(target_os = "macos") { "Waits in the menu bar so the shortcut always works." } else { "Waits in the tray so the shortcut always works." }).into()),
             path: None,
             control: Control::Switch(Ctl::WelcomeAutostart, ui.panel.welcome_autostart),
             border: true,

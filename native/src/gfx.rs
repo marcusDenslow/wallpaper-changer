@@ -28,8 +28,15 @@ fn renderer_options() -> egui_wgpu::RendererOptions {
 impl GpuCore {
     pub fn create() -> Result<Self, String> {
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = wgpu::Backends::DX12;
-        desc.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+        #[cfg(windows)]
+        {
+            desc.backends = wgpu::Backends::DX12;
+            desc.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            desc.backends = wgpu::Backends::METAL;
+        }
         let instance = wgpu::Instance::new(desc);
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
@@ -105,6 +112,11 @@ impl GpuWindow {
             // DirectComposition gives per-pixel alpha. Don't set `transparent` or a system
             // backdrop here: on Windows 11 both make DWM blur everything behind the window.
             .with_no_redirection_bitmap(true);
+        #[cfg(target_os = "macos")]
+        let attrs = {
+            use winit::platform::macos::WindowAttributesExtMacOS as _;
+            attrs.with_transparent(true).with_has_shadow(false)
+        };
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| format!("Couldn't create the window: {e}"))?);
         #[cfg(windows)]
         plain_popup(&window);
@@ -126,6 +138,9 @@ impl GpuWindow {
         }
         let alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
             wgpu::CompositeAlphaMode::PreMultiplied
+        } else if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
+            // Metal calls its non-opaque layer mode "post-multiplied"; egui's output composites correctly with it
+            wgpu::CompositeAlphaMode::PostMultiplied
         } else {
             crate::log(format!("no premultiplied alpha: {:?}", caps.alpha_modes));
             caps.alpha_modes[0]
@@ -232,6 +247,11 @@ impl GpuWindow {
             Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
             _ => 0,
         }
+    }
+
+    #[cfg(not(windows))]
+    pub fn hwnd(&self) -> isize {
+        0
     }
 }
 

@@ -563,7 +563,8 @@ impl App {
 
     /// Tray process: forward to the running overlay, or start one.
     fn route(&mut self, event_loop: &ActiveEventLoop, view: View, toggle: bool) {
-        if self.role == Role::Overlay {
+        // On macOS it's one process: the tray and the overlay share it (no second process to spawn).
+        if self.role == Role::Overlay || cfg!(target_os = "macos") {
             if toggle {
                 self.toggle(event_loop);
             } else {
@@ -640,7 +641,7 @@ impl App {
             if let Some((_, tex)) = self.ui.full_image.take() {
                 tex.destroy();
             }
-            if self.role == Role::Overlay && !self.quit {
+            if (self.role == Role::Overlay || cfg!(target_os = "macos")) && !self.quit {
                 // the process exits after WARM_FOR, which frees all of this
                 self.parked = Some(o);
             } else {
@@ -745,8 +746,17 @@ impl ApplicationHandler<UserEvent> for App {
         let menu = Menu::new();
         let _ = menu.append_items(&[&open, &prefs, &PredefinedMenuItem::separator(), &quit]);
         let mut builder = TrayIconBuilder::new().with_tooltip("Wallpaper Switcher").with_menu(Box::new(menu)).with_menu_on_left_click(false);
+        #[cfg(windows)]
         if let Ok(icon) = tray_icon::Icon::from_resource(1, None) {
             builder = builder.with_icon(icon);
+        }
+        #[cfg(not(windows))]
+        if let Ok(img) = image::load_from_memory(include_bytes!("../assets/32x32.png")) {
+            let rgba = img.into_rgba8();
+            let (w, h) = rgba.dimensions();
+            if let Ok(icon) = tray_icon::Icon::from_rgba(rgba.into_raw(), w, h) {
+                builder = builder.with_icon(icon);
+            }
         }
         self.tray = builder.build().ok();
         self.tray_open = Some(open);
@@ -985,7 +995,14 @@ fn main() {
         return;
     }
 
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("Wallpaper Switcher failed to start");
+    let mut builder = EventLoop::<UserEvent>::with_user_event();
+    #[cfg(target_os = "macos")]
+    {
+        // menu bar only: no Dock icon
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS as _};
+        builder.with_activation_policy(ActivationPolicy::Accessory);
+    }
+    let event_loop = builder.build().expect("Wallpaper Switcher failed to start");
     let proxy = event_loop.create_proxy();
     // overlay process: start the slow GPU setup immediately, in parallel with everything else
     let gpu_ready = Arc::new(AtomicBool::new(false));
