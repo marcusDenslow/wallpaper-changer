@@ -67,7 +67,60 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::path::PathBuf;
+
+    const LABEL: &str = "com.wallpaperswitcher.app";
+
+    fn plist_path() -> Option<PathBuf> {
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Library/LaunchAgents").join(format!("{LABEL}.plist")))
+    }
+
+    pub fn is_enabled() -> bool {
+        plist_path().is_some_and(|path| path.is_file())
+    }
+
+    pub fn enable() -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let path = plist_path().ok_or("Couldn't find your home folder")?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let exe = exe.display().to_string().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{exe}</string>
+    <string>--autostart</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+"#
+        );
+        std::fs::write(&path, plist).map_err(|e| e.to_string())
+    }
+
+    pub fn disable() -> Result<(), String> {
+        if let Some(path) = plist_path() {
+            if path.is_file() {
+                std::fs::remove_file(path).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     pub fn is_enabled() -> bool {
         false

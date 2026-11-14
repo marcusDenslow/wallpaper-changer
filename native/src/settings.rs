@@ -54,11 +54,21 @@ impl Default for Settings {
     }
 }
 
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
 pub fn config_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        return home_dir().map(|h| h.join("Library/Application Support").join(crate::APP_ID));
+    }
     std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join(crate::APP_ID))
 }
 
 pub fn cache_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        return home_dir().map(|h| h.join("Library/Caches").join(crate::APP_ID));
+    }
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(crate::APP_ID))
 }
 
@@ -71,10 +81,15 @@ pub fn exists() -> bool {
 }
 
 pub fn load() -> Settings {
-    file()
+    let mut settings: Settings = file()
         .and_then(|path| fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        // macOS has no public way to set the lock screen picture
+        settings.lock_mode = "off".into();
+    }
+    settings
 }
 
 pub fn save(settings: &Settings) -> Result<(), String> {
@@ -117,6 +132,9 @@ fn pictures_dir() -> Option<PathBuf> {
                 return path;
             }
         }
+    }
+    if cfg!(target_os = "macos") {
+        return home_dir().map(|h| h.join("Pictures"));
     }
     std::env::var_os("USERPROFILE").map(|d| PathBuf::from(d).join("Pictures"))
 }
